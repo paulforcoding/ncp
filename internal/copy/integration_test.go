@@ -200,7 +200,7 @@ func TestIntegration_ContextCancel(t *testing.T) {
 	dst := t.TempDir()
 
 	// Create enough files that walk won't finish instantly
-	testutil.CreateTestTree(src, 500)
+	testutil.CreateTestTree(src, 5000)
 
 	store := openTestStore(t)
 	srcObj, _ := local.NewSource(src)
@@ -211,7 +211,7 @@ func TestIntegration_ContextCancel(t *testing.T) {
 	// Cancel context after a short delay
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		cancel()
 	}()
 

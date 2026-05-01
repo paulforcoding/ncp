@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zp001/ncp/internal/progress/pebble"
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -114,6 +114,7 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 
 // dispatchRemaining pushes discovered (not yet dispatched) items to discoverCh.
 // Called after walk is complete, so channel will drain without blocking.
+// Since DB only stores 2-byte status, we re-stat each path to rebuild full DiscoverItem.
 func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
@@ -130,10 +131,11 @@ func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 		if cs != model.CopyDiscovered {
 			continue
 		}
-		discoverCh <- model.DiscoverItem{
-			SrcBase: w.src.Base(),
-			RelPath: key,
+		item, err := w.src.Restat(key)
+		if err != nil {
+			continue
 		}
+		discoverCh <- item
 	}
 }
 
@@ -154,10 +156,11 @@ func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 		if cs == model.CopyDone {
 			continue
 		}
-		discoverCh <- model.DiscoverItem{
-			SrcBase: w.src.Base(),
-			RelPath: key,
+		item, err := w.src.Restat(key)
+		if err != nil {
+			continue
 		}
+		discoverCh <- item
 	}
 	close(discoverCh)
 	w.walkDone.Store(true)

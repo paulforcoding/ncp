@@ -8,6 +8,7 @@ import (
 
 	"github.com/zp001/ncp/internal/storage/local"
 	"github.com/zp001/ncp/pkg/model"
+	pkgstorage "github.com/zp001/ncp/pkg/storage"
 )
 
 // DestConfig holds IO configuration for destination creation.
@@ -19,7 +20,7 @@ type DestConfig struct {
 }
 
 // NewSource creates a Source based on the URL scheme of srcPath.
-func NewSource(srcPath string) (Source, error) {
+func NewSource(srcPath string) (pkgstorage.Source, error) {
 	u, err := parsePath(srcPath)
 	if err != nil {
 		return nil, err
@@ -33,12 +34,12 @@ func NewSource(srcPath string) (Source, error) {
 }
 
 // NewDestination creates a Destination based on the URL scheme of dstPath.
-func NewDestination(dstPath string) (Destination, error) {
+func NewDestination(dstPath string) (pkgstorage.Destination, error) {
 	return NewDestinationWithConfig(dstPath, DestConfig{})
 }
 
 // NewDestinationWithConfig creates a Destination with IO configuration.
-func NewDestinationWithConfig(dstPath string, cfg DestConfig) (Destination, error) {
+func NewDestinationWithConfig(dstPath string, cfg DestConfig) (pkgstorage.Destination, error) {
 	u, err := parsePath(dstPath)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,6 @@ func NewDestinationWithConfig(dstPath string, cfg DestConfig) (Destination, erro
 			wcfg.IOSizeTiers = model.DefaultIOSizeTiers()
 		}
 		if !cfg.DirectIO && !cfg.SyncWrites {
-			// Neither specified: default SyncWrites=true
 			wcfg.SyncWrites = true
 		}
 		return local.NewDestinationWithConfig(u.Path, wcfg)

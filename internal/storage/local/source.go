@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -119,3 +119,47 @@ func (s *Source) toRelPath(absPath string) (string, error) {
 
 // Base returns the source base directory.
 func (s *Source) Base() string { return s.base }
+
+// Restat rebuilds a DiscoverItem by stat-ing the source path.
+// Used by Walker.dispatchRemaining to re-enqueue discovered items
+// whose full metadata wasn't stored in DB.
+func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
+	fullPath := filepath.Join(s.base, relPath)
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return model.DiscoverItem{}, fmt.Errorf("local restat %s: %w", relPath, err)
+	}
+
+	mode := info.Mode()
+	var ft model.FileType
+	switch {
+	case info.IsDir():
+		ft = model.FileDir
+	case mode&fs.ModeSymlink != 0:
+		ft = model.FileSymlink
+	default:
+		ft = model.FileRegular
+	}
+
+	uid, gid := fileOwner(info)
+
+	item := model.DiscoverItem{
+		SrcBase:  s.base,
+		RelPath:  relPath,
+		FileType: ft,
+		FileSize: info.Size(),
+		Mode:     uint32(mode.Perm()),
+		Uid:      uid,
+		Gid:      gid,
+	}
+
+	if ft == model.FileSymlink {
+		target, err := os.Readlink(fullPath)
+		if err != nil {
+			return model.DiscoverItem{}, fmt.Errorf("local restat readlink %s: %w", relPath, err)
+		}
+		item.LinkTarget = target
+	}
+
+	return item, nil
+}

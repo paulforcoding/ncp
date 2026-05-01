@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/progress/pebble"
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 

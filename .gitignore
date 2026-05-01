@@ -3,7 +3,7 @@ ncp
 /ncp
 
 # Progress storage
-progress/
+/progress/
 
 # IDE
 .idea/

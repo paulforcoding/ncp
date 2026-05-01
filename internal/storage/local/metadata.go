@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 // setMetadata applies chmod, chown, utime, and setxattr to a file or directory.
-func setMetadata(base, relPath string, meta storage.FileMetadata) error {
+func setMetadata(base, relPath string, meta model.FileMetadata) error {
 	fullPath := filepath.Join(base, relPath)
 
 	// chmod

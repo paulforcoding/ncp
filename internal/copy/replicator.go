@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 

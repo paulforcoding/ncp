@@ -5,7 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 // Destination implements storage.Destination for the local filesystem.
@@ -82,7 +83,7 @@ func (d *Destination) Symlink(relPath string, target string) error {
 }
 
 // SetMetadata applies POSIX metadata to a file or directory.
-func (d *Destination) SetMetadata(relPath string, meta storage.FileMetadata) error {
+func (d *Destination) SetMetadata(relPath string, meta model.FileMetadata) error {
 	return setMetadata(d.base, relPath, meta)
 }
 

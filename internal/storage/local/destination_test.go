@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zp001/ncp/internal/storage"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 func TestDestinationMkdir(t *testing.T) {
@@ -93,7 +93,7 @@ func TestDestinationSetMetadataChmod(t *testing.T) {
 	w.WriteAt([]byte("x"), 0)
 	w.Close(nil)
 
-	meta := storage.FileMetadata{Mode: 0o755}
+	meta := model.FileMetadata{Mode: 0o755}
 	if err := dst.SetMetadata("meta.txt", meta); err != nil {
 		t.Fatalf("set metadata: %v", err)
 	}

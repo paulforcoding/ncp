@@ -3,9 +3,9 @@
 package local
 
 import (
-	"syscall"
+	"golang.org/x/sys/unix"
 )
 
 func setXattr(path, key, value string) error {
-	return syscall.Setxattr(path, key, []byte(value), 0)
+	return unix.Setxattr(path, key, []byte(value), 0)
 }
