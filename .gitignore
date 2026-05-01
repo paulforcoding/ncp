@@ -1,0 +1,23 @@
+# Binaries
+ncp
+/ncp
+
+# Progress storage
+progress/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+*.test
+*.out
+
+# Build
+dist/
