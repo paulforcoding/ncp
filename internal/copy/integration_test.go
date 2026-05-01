@@ -4,14 +4,17 @@ package copy
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/zp001/ncp/internal/progress/pebble"
 	"github.com/zp001/ncp/internal/storage/local"
 	"github.com/zp001/ncp/pkg/model"
+	"github.com/zp001/ncp/pkg/storage"
 	"github.com/zp001/ncp/testutil"
 )
 
@@ -415,5 +418,191 @@ func TestIntegration_ErrorFileHandling(t *testing.T) {
 	}
 	if doneCount == 0 {
 		t.Fatal("expected at least 1 done entry in DB")
+	}
+}
+
+// failAfterN wraps a Destination and makes OpenFile fail after N successful calls.
+// Mkdir/Symlink/SetMetadata pass through unchanged.
+// Used to simulate a real partial-failure scenario for resume testing.
+type failAfterN struct {
+	storage.Destination
+	mu     sync.Mutex
+	count  int
+	failAt int
+}
+
+func (d *failAfterN) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+	d.mu.Lock()
+	d.count++
+	if d.count > d.failAt {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("simulated disk error after %d files", d.failAt)
+	}
+	d.mu.Unlock()
+	return d.Destination.OpenFile(relPath, size, mode, uid, gid)
+}
+
+// cancelAfterWalkSource wraps a Source and cancels context after N Walk callbacks.
+// This deterministically interrupts the walk without relying on timing.
+type cancelAfterWalkSource struct {
+	storage.Source
+	mu     sync.Mutex
+	count  int
+	limit  int
+	cancel context.CancelFunc
+}
+
+func (s *cancelAfterWalkSource) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+	return s.Source.Walk(ctx, func(item model.DiscoverItem) error {
+		s.mu.Lock()
+		s.count++
+		if s.count >= s.limit {
+			s.cancel()
+		}
+		s.mu.Unlock()
+		return fn(item)
+	})
+}
+
+// Test 10: Resume after real cancellation — interrupt during walk, then resume.
+// Walk was interrupted, so walk_complete is absent. Resume destroys DB and starts fresh.
+func TestIntegration_ResumeAfterCancellation(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	const fileCount = 3000
+	if err := testutil.CreateTestTree(src, fileCount); err != nil {
+		t.Fatalf("create test tree: %v", err)
+	}
+
+	store := openTestStore(t)
+	srcObj, _ := local.NewSource(src)
+	dstObj, _ := local.NewDestination(dst)
+
+	// Cancel after 1000 items are walked — deterministic, no timing dependency
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelSrc := &cancelAfterWalkSource{Source: srcObj, limit: 1000, cancel: cancel}
+
+	// First run: walk gets interrupted by context cancellation
+	job := NewJob(cancelSrc, dstObj, store, WithParallelism(1), WithBufferSizes(1, 1))
+	job.Run(ctx)
+
+	// Walk should have been interrupted
+	has, _ := store.HasWalkComplete()
+	if has {
+		t.Fatal("expected NO __walk_complete — walk was cancelled")
+	}
+
+	t.Logf("Walk cancelled after %d items discovered", cancelSrc.count)
+
+	// Resume with the real source (not wrapped)
+	job2 := NewJob(srcObj, dstObj, store, WithResume(true))
+	exitCode, err := job2.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if err := testutil.VerifyCopy(src, dst); err != nil {
+		t.Fatalf("verify copy after resume: %v", err)
+	}
+
+	has, _ = store.HasWalkComplete()
+	if !has {
+		t.Fatal("expected __walk_complete after resume")
+	}
+}
+
+// Test 11: Resume after partial failure — walk completes but some copies fail.
+// Uses failAfterN to inject real destination errors, then resumes with the
+// real destination. This exercises the ResumeFromDB path (walk_complete present)
+// through actual code paths rather than manual DB manipulation.
+func TestIntegration_ResumeAfterPartialFailure(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	const fileCount = 500
+	if err := testutil.CreateTestTree(src, fileCount); err != nil {
+		t.Fatalf("create test tree: %v", err)
+	}
+
+	store := openTestStore(t)
+	srcObj, _ := local.NewSource(src)
+	realDst, _ := local.NewDestination(dst)
+
+	// First run: wrapped destination that fails after ~200 regular files
+	const failAt = 200
+	failDst := &failAfterN{Destination: realDst, failAt: failAt}
+
+	job := NewJob(srcObj, failDst, store, WithParallelism(4))
+	exitCode, err := job.Run(context.Background())
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if err == nil {
+		t.Fatal("expected error for partial failure")
+	}
+
+	// Walk should have completed
+	has, _ := store.HasWalkComplete()
+	if !has {
+		t.Fatal("expected __walk_complete after partial failure")
+	}
+
+	// Some files should be in dst, but not all regular files
+	dstRegulars, _, _, _ := testutil.CountFiles(dst)
+	srcRegulars, _, _, _ := testutil.CountFiles(src)
+	t.Logf("After partial failure: %d/%d regular files in dst", dstRegulars, srcRegulars)
+	if dstRegulars == 0 {
+		t.Fatal("expected some files to be copied before failure")
+	}
+	if dstRegulars >= srcRegulars {
+		t.Fatal("expected some regular files to be missing after partial failure")
+	}
+
+	// Verify DB has both CopyDone and CopyError entries
+	it, err := store.Iter()
+	if err != nil {
+		t.Fatalf("iter: %v", err)
+	}
+	doneCount := 0
+	errorCount := 0
+	for it.First(); it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) >= 2 && key[0] == '_' && key[1] == '_' {
+			continue
+		}
+		cs, _ := it.Value()
+		if cs == model.CopyDone {
+			doneCount++
+		} else if cs == model.CopyError {
+			errorCount++
+		}
+	}
+	it.Close()
+
+	if doneCount == 0 {
+		t.Fatal("expected some CopyDone entries in DB")
+	}
+	if errorCount == 0 {
+		t.Fatal("expected some CopyError entries in DB")
+	}
+	t.Logf("DB state: %d done, %d error", doneCount, errorCount)
+
+	// Resume with the real destination (no wrapper)
+	job2 := NewJob(srcObj, realDst, store, WithResume(true))
+	exitCode, err = job2.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if err := testutil.VerifyCopy(src, dst); err != nil {
+		t.Fatalf("verify copy after resume: %v", err)
 	}
 }
