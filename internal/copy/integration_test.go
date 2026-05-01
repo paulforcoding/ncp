@@ -258,6 +258,101 @@ func TestIntegration_EnsureDirMtime(t *testing.T) {
 	}
 }
 
+// Test 8: Resume with walk_complete — resume copies remaining files
+func TestIntegration_ResumeWithWalkComplete(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Create source tree
+	os.MkdirAll(filepath.Join(src, "subdir"), 0o755)
+	os.WriteFile(filepath.Join(src, "file1.txt"), []byte("hello"), 0o644)
+	os.WriteFile(filepath.Join(src, "file2.txt"), []byte("world"), 0o644)
+	os.WriteFile(filepath.Join(src, "subdir", "file3.txt"), []byte("test"), 0o644)
+
+	store := openTestStore(t)
+	srcObj, _ := local.NewSource(src)
+	dstObj, _ := local.NewDestination(dst)
+
+	// First run: copy file1 and file2, then cancel before all files done
+	// Simulate by doing a full copy first, then manually marking some as discovered
+	exitCode, err := runCopyJob(t, src, dst, store)
+	if err != nil {
+		t.Fatalf("first copy job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Now simulate a partially-completed state:
+	// Mark file2.txt as CopyDiscovered (as if copy was interrupted before it was copied)
+	if err := store.Set("file2.txt", model.CopyDiscovered, model.CksumNone); err != nil {
+		t.Fatalf("set discovered: %v", err)
+	}
+	// Delete the destination file2.txt to simulate it wasn't copied
+	os.Remove(filepath.Join(dst, "file2.txt"))
+
+	// Resume: should only copy file2.txt
+	job := NewJob(srcObj, dstObj, store, WithResume(true))
+	exitCode, err = job.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
+	}
+
+	// Verify file2.txt was copied on resume
+	data, err := os.ReadFile(filepath.Join(dst, "file2.txt"))
+	if err != nil || string(data) != "world" {
+		t.Fatalf("file2.txt content mismatch after resume: %q, err %v", string(data), err)
+	}
+}
+
+// Test 9: Resume without walk_complete — destroys DB and starts fresh
+func TestIntegration_ResumeWithoutWalkComplete(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Create source tree
+	os.WriteFile(filepath.Join(src, "file1.txt"), []byte("hello"), 0o644)
+	os.WriteFile(filepath.Join(src, "file2.txt"), []byte("world"), 0o644)
+
+	store := openTestStore(t)
+
+	// Simulate a walk that didn't complete:
+	// Just write some entries directly without SetWalkComplete
+	store.Set("file1.txt", model.CopyDiscovered, model.CksumNone)
+
+	srcObj, _ := local.NewSource(src)
+	dstObj, _ := local.NewDestination(dst)
+
+	// Resume should detect no walk_complete and start fresh
+	job := NewJob(srcObj, dstObj, store, WithResume(true))
+	exitCode, err := job.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Both files should be copied
+	data, _ := os.ReadFile(filepath.Join(dst, "file1.txt"))
+	if string(data) != "hello" {
+		t.Fatalf("file1.txt mismatch after resume")
+	}
+	data, _ = os.ReadFile(filepath.Join(dst, "file2.txt"))
+	if string(data) != "world" {
+		t.Fatalf("file2.txt mismatch after resume")
+	}
+
+	// walk_complete should exist now
+	has, _ := store.HasWalkComplete()
+	if !has {
+		t.Fatal("expected __walk_complete after fresh walk from resume")
+	}
+}
+
 // Test 7: Error file handling — unreadable file produces error status
 func TestIntegration_ErrorFileHandling(t *testing.T) {
 	if testutil.IsRoot() {

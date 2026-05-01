@@ -25,6 +25,7 @@ type Job struct {
 	discoverBuf    int
 	resultBuf      int
 	ensureDirMtime bool
+	resume         bool
 }
 
 // NewJob creates a copy Job.
@@ -47,13 +48,14 @@ func NewJob(src storage.Source, dst storage.Destination, store *pebble.Store, op
 // JobOption configures a Job.
 type JobOption func(*Job)
 
-func WithParallelism(n int) JobOption          { return func(j *Job) { j.parallelism = n } }
+func WithParallelism(n int) JobOption             { return func(j *Job) { j.parallelism = n } }
 func WithFileLog(fl FileLogger, sec int) JobOption { return func(j *Job) { j.fileLog = fl; j.logInterval = sec } }
-func WithIOSize(size int) JobOption            { return func(j *Job) { j.ioSize = size } }
-func WithBufferSizes(d, r int) JobOption       { return func(j *Job) { j.discoverBuf = d; j.resultBuf = r } }
-func WithTaskID(id string) JobOption           { return func(j *Job) { j.taskID = id } }
-func WithDstBase(base string) JobOption        { return func(j *Job) { j.dstBase = base } }
-func WithEnsureDirMtime(v bool) JobOption      { return func(j *Job) { j.ensureDirMtime = v } }
+func WithIOSize(size int) JobOption               { return func(j *Job) { j.ioSize = size } }
+func WithBufferSizes(d, r int) JobOption          { return func(j *Job) { j.discoverBuf = d; j.resultBuf = r } }
+func WithTaskID(id string) JobOption              { return func(j *Job) { j.taskID = id } }
+func WithDstBase(base string) JobOption           { return func(j *Job) { j.dstBase = base } }
+func WithEnsureDirMtime(v bool) JobOption         { return func(j *Job) { j.ensureDirMtime = v } }
+func WithResume(v bool) JobOption                 { return func(j *Job) { j.resume = v } }
 
 // Run executes the copy job and blocks until completion.
 // Returns exit code: 0=success, 2=partial failure.
@@ -64,38 +66,85 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 	walker := NewWalker(j.src, j.store, j.fileLog, durationFromSec(j.logInterval))
 	dbWriter := NewDBWriter(j.store, walker, j.fileLog)
 
-	var wg sync.WaitGroup
+	// Start the pipeline
+	replWg := j.startReplicators(discoverCh, resultCh)
+	dbWg := j.startDBWriter(dbWriter, resultCh)
 
-	// 1. Start DBWriter — exits when resultCh is closed and flushed
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		dbWriter.Run(resultCh)
-	}()
-
-	// 2. Start Replicators — each exits when discoverCh is closed
-	var replWg sync.WaitGroup
-	for i := 0; i < j.parallelism; i++ {
-		replWg.Add(1)
-		go func(id int) {
-			defer replWg.Done()
-			r := NewReplicator(id, j.src, j.dst, j.fileLog, j.ioSize)
-			r.Run(discoverCh, resultCh)
-		}(i)
-	}
-
-	// 3. Close resultCh after all Replicators exit
+	// Close resultCh after all Replicators exit
 	go func() {
 		replWg.Wait()
 		close(resultCh)
 	}()
 
-	// 4. Run Walker — closes discoverCh when done
-	walkErr := walker.Run(ctx, discoverCh)
+	// Populate discoverCh
+	var walkErr error
+	if j.resume {
+		walkErr = j.populateFromResume(ctx, walker, discoverCh)
+	} else {
+		walkErr = walker.Run(ctx, discoverCh)
+	}
 
-	// 5. Wait for DBWriter to finish
-	wg.Wait()
+	// Wait for pipeline to drain
+	dbWg.Wait()
 
+	return j.finalize(walker, dbWriter, walkErr)
+}
+
+// populateFromResume handles resume logic:
+// - walk_complete exists: ResumeFromDB (push non-done items)
+// - walk_complete absent: destroy DB, reopen, run fresh walk
+func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- model.DiscoverItem) error {
+	hasWalkComplete, err := j.store.HasWalkComplete()
+	if err != nil {
+		return fmt.Errorf("check walk_complete: %w", err)
+	}
+
+	if hasWalkComplete {
+		// Resume from DB — push non-done items, close discoverCh, set walkComplete
+		walker.ResumeFromDB(discoverCh)
+		return nil
+	}
+
+	// Walk was incomplete — destroy DB and start fresh
+	if err := j.store.Destroy(); err != nil {
+		return fmt.Errorf("destroy store for fresh start: %w", err)
+	}
+	// Re-open the store at the same directory
+	if err := j.store.Reopen(); err != nil {
+		return fmt.Errorf("reopen store: %w", err)
+	}
+	// Re-create walker since store was recreated
+	freshWalker := NewWalker(j.src, j.store, j.fileLog, durationFromSec(j.logInterval))
+	return freshWalker.Run(ctx, discoverCh)
+}
+
+// startReplicators launches N Replicator goroutines sharing discoverCh.
+func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	for i := 0; i < j.parallelism; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			r := NewReplicator(id, j.src, j.dst, j.fileLog, j.ioSize)
+			r.Run(discoverCh, resultCh)
+		}(i)
+	}
+	return &wg
+}
+
+// startDBWriter launches the DBWriter goroutine.
+func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dbWriter.Run(resultCh)
+	}()
+	return &wg
+}
+
+// finalize computes exit code, runs EnsureDirMtime, and emits completion report.
+func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
 	done, failed, total := dbWriter.Stats()
 
 	exitCode := 0
@@ -109,15 +158,14 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 		runErr = fmt.Errorf("%d of %d files failed", failed, total)
 	}
 
-	// 6. EnsureDirMtime (only if walk completed and destination is local filesystem)
+	// EnsureDirMtime (only if walk completed and destination is local filesystem)
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
 		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
-			// Non-fatal: log but don't change exit code
 			_ = err
 		}
 	}
 
-	// 7. Generate and write completion report
+	// Generate and write completion report
 	if j.taskID != "" {
 		report, _ := GenerateReport(j.taskID, j.store, done, failed, exitCode)
 		if report != nil && j.fileLog != nil {

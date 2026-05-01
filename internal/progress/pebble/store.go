@@ -118,6 +118,14 @@ func (s *Store) HasWalkComplete() (bool, error) {
 	return true, nil
 }
 
+// Reopen closes the DB and reopens it (for resume-without-walk_complete case).
+func (s *Store) Reopen() error {
+	if err := s.Close(); err != nil {
+		return fmt.Errorf("pebble close for reopen: %w", err)
+	}
+	return s.Open(s.dir)
+}
+
 // Destroy closes and removes the Pebble DB directory.
 func (s *Store) Destroy() error {
 	if s.db == nil {
