@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,8 +16,11 @@ import (
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/internal/progress/pebble"
+	"github.com/zp001/ncp/internal/protocol"
+	"github.com/zp001/ncp/internal/storage/local"
 	storfactory "github.com/zp001/ncp/internal/storage"
 	"github.com/zp001/ncp/internal/task"
+	"github.com/zp001/ncp/pkg/model"
 	pkgstorage "github.com/zp001/ncp/pkg/storage"
 )
 
@@ -126,7 +130,20 @@ func main() {
 
 	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd)
+	// serve command
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start ncp server to receive file pushes",
+		Long:  "Start ncp server to receive file pushes over the ncp protocol.\n\nWARNING: MVP uses cleartext — only use on internal networks or VPN.",
+		Args:  cobra.NoArgs,
+		RunE:  runServe,
+	}
+	serveCmd.Flags().String("listen", ":9900", "Listen address (host:port)")
+	serveCmd.Flags().String("base", "", "Base directory for received files (required)")
+	serveCmd.Flags().Bool("enable-SyncWrites", true, "Enable fsync on write")
+	serveCmd.Flags().Bool("disable-SyncWrites", false, "Disable fsync on write")
+
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -191,20 +208,23 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	defer fl.Close()
 
 	// Dependency injection
-	src, dst, store, err := setupCopyDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCopyDeps(cfg, srcPath, dstPath, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	job := copy.NewJob(src, dst, store,
+	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
 		copy.WithIOSize(cfg.IOSize),
 		copy.WithTaskID(taskID),
 		copy.WithDstBase(dstPath),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
 
@@ -249,13 +269,13 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	}
 	defer fl.Close()
 
-	src, dst, store, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	job := copy.NewJob(src, dst, store,
+	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
 		copy.WithIOSize(cfg.IOSize),
@@ -263,7 +283,10 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		copy.WithDstBase(meta.DstBase),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithResume(true),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
 
@@ -315,13 +338,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 	defer fl.Close()
 
-	src, dst, store, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	job := copy.NewJob(src, dst, store,
+	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
 		copy.WithIOSize(cfg.IOSize),
@@ -329,7 +352,10 @@ func runResume(cmd *cobra.Command, args []string) error {
 		copy.WithDstBase(meta.DstBase),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithResume(true),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
 
@@ -340,6 +366,51 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 	os.Exit(exitCode)
 	return nil
+}
+
+// runServe handles `ncp serve` — starts the ncp protocol server.
+func runServe(cmd *cobra.Command, args []string) error {
+	listenAddr, _ := cmd.Flags().GetString("listen")
+	baseDir, _ := cmd.Flags().GetString("base")
+
+	if baseDir == "" {
+		return fmt.Errorf("--base is required")
+	}
+
+	resolveBoolFlag(cmd, "SyncWrites", "enable-SyncWrites", "disable-SyncWrites")
+	syncWrites, _ := cmd.Flags().GetBool("SyncWrites")
+
+	wcfg := local.WriterConfig{
+		SyncWrites:  syncWrites,
+		IOSizeTiers: model.DefaultIOSizeTiers(),
+	}
+	dst, err := local.NewDestinationWithConfig(baseDir, wcfg)
+	if err != nil {
+		return fmt.Errorf("create local destination: %w", err)
+	}
+
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", listenAddr, err)
+	}
+
+	handlerFactory := func() protocol.ConnHandler {
+		return newServeConnHandler(dst)
+	}
+
+	srv := protocol.NewServer(listener, handlerFactory)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+
+	fmt.Fprintf(os.Stderr, "{\"event\":\"serve\",\"listen\":%q,\"base\":%q}\n", listenAddr, baseDir)
+
+	return srv.Serve()
 }
 
 // runTaskList handles `ncp task list`.
@@ -420,30 +491,44 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 }
 
 // setupCopyDeps creates Source, Destination, and opens the Pebble store.
-func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (pkgstorage.Source, pkgstorage.Destination, *pebble.Store, error) {
+// For ncp:// destinations, returns a dstFactory via extraOpts instead of a shared dst.
+func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (pkgstorage.Source, pkgstorage.Destination, *pebble.Store, []copy.JobOption, error) {
 	src, err := storfactory.NewSource(srcPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create source: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
 
-	dstCfg := storfactory.DestConfig{
-		DirectIO:    cfg.DirectIO,
-		SyncWrites:  cfg.SyncWrites,
-		IOSize:      cfg.IOSize,
-		IOSizeTiers: cfg.IOSizeTiers,
-	}
-	dst, err := storfactory.NewDestinationWithConfig(dstPath, dstCfg)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create destination: %w", err)
+	var extraOpts []copy.JobOption
+	var dst pkgstorage.Destination
+
+	u, _ := storfactory.ParsePath(dstPath)
+	if u.Scheme == "ncp" {
+		// Remote: each replicator gets its own connection
+		dstFactory := func(id int) (pkgstorage.Destination, error) {
+			return storfactory.NewRemoteDestination(u.Host, u.Path)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
+		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
+	} else {
+		dstCfg := storfactory.DestConfig{
+			DirectIO:    cfg.DirectIO,
+			SyncWrites:  cfg.SyncWrites,
+			IOSize:      cfg.IOSize,
+			IOSizeTiers: cfg.IOSizeTiers,
+		}
+		dst, err = storfactory.NewDestinationWithConfig(dstPath, dstCfg)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
+		}
 	}
 
 	dbDir := filepath.Join(progressDir, taskID, "db")
 	store := &pebble.Store{}
 	if err := store.Open(dbDir); err != nil {
-		return nil, nil, nil, fmt.Errorf("open progress store: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
 	}
 
-	return src, dst, store, nil
+	return src, dst, store, extraOpts, nil
 }
 
 // loadResumeConfig loads config from a resume/task command's Viper flags.

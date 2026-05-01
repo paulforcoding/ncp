@@ -41,3 +41,9 @@ type Destination interface {
 	Symlink(relPath string, target string) error
 	SetMetadata(relPath string, meta model.FileMetadata) error
 }
+
+// TaskFinalizer is optionally implemented by Destination implementations
+// that need to notify a remote server when the replicator is done.
+type TaskFinalizer interface {
+	Done() error
+}

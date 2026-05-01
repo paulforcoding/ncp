@@ -1,6 +1,7 @@
 package copy
 
 import (
+	"crypto/md5"
 	"fmt"
 	"io"
 	"os"
@@ -35,6 +36,9 @@ func (r *Replicator) Run(discoverCh <-chan model.DiscoverItem, resultCh chan<- m
 	for item := range discoverCh {
 		result := r.copyOne(item)
 		resultCh <- result
+	}
+	if f, ok := r.dst.(storage.TaskFinalizer); ok {
+		f.Done()
 	}
 }
 
@@ -91,7 +95,6 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
 	}
-	defer writer.Close(nil)
 
 	bufSize := r.ioSize
 	if bufSize <= 0 {
@@ -100,11 +103,14 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	buf := make([]byte, bufSize)
 
 	var offset int64
+	md5Hash := md5.New()
 	for {
 		n, readErr := reader.ReadAt(buf, offset)
 		if n > 0 {
+			md5Hash.Write(buf[:n])
 			written, writeErr := writer.WriteAt(buf[:n], offset)
 			if writeErr != nil {
+				writer.Close(nil)
 				return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: writeErr}
 			}
 			offset += int64(written)
@@ -113,11 +119,13 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 			break
 		}
 		if readErr != nil {
+			writer.Close(nil)
 			return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: readErr}
 		}
 	}
 
-	if err := writer.Close(nil); err != nil {
+	checksum := md5Hash.Sum(nil)
+	if err := writer.Close(checksum); err != nil {
 		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
 	}
 

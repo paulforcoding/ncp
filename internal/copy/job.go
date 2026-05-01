@@ -15,6 +15,7 @@ import (
 type Job struct {
 	src            storage.Source
 	dst            storage.Destination
+	dstFactory     func(id int) (storage.Destination, error)
 	dstBase        string // for EnsureDirMtime
 	store          *pebble.Store
 	taskID         string
@@ -56,6 +57,9 @@ func WithTaskID(id string) JobOption              { return func(j *Job) { j.task
 func WithDstBase(base string) JobOption           { return func(j *Job) { j.dstBase = base } }
 func WithEnsureDirMtime(v bool) JobOption         { return func(j *Job) { j.ensureDirMtime = v } }
 func WithResume(v bool) JobOption                 { return func(j *Job) { j.resume = v } }
+func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
+	return func(j *Job) { j.dstFactory = f }
+}
 
 // Run executes the copy job and blocks until completion.
 // Returns exit code: 0=success, 2=partial failure.
@@ -125,7 +129,23 @@ func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh ch
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			r := NewReplicator(id, j.src, j.dst, j.fileLog, j.ioSize)
+			dst := j.dst
+			if j.dstFactory != nil {
+				var err error
+				dst, err = j.dstFactory(id)
+				if err != nil {
+					// Connection failed — drain items and push errors
+					for item := range discoverCh {
+						resultCh <- model.FileResult{
+							RelPath:    item.RelPath,
+							CopyStatus: model.CopyError,
+							Err:        fmt.Errorf("create destination for replicator %d: %w", id, err),
+						}
+					}
+					return
+				}
+			}
+			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize)
 			r.Run(discoverCh, resultCh)
 		}(i)
 	}
