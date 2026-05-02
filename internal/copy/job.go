@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -16,7 +17,7 @@ type Job struct {
 	src            storage.Source
 	dst            storage.Destination
 	dstFactory     func(id int) (storage.Destination, error)
-	dstBase        string // for EnsureDirMtime
+	dstBase        string
 	store          progress.ProgressStore
 	taskID         string
 	parallelism    int
@@ -28,6 +29,7 @@ type Job struct {
 	resultBuf      int
 	ensureDirMtime bool
 	resume         bool
+	metrics        *ThroughputMeter
 }
 
 // NewJob creates a copy Job.
@@ -40,6 +42,7 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 		discoverBuf:    100000,
 		resultBuf:      100000,
 		ensureDirMtime: true,
+		metrics:        &ThroughputMeter{},
 	}
 	for _, o := range opts {
 		o(j)
@@ -64,19 +67,18 @@ func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 }
 
 // Run executes the copy job and blocks until completion.
-// Returns exit code: 0=success, 2=partial failure.
 func (j *Job) Run(ctx context.Context) (int, error) {
 	discoverCh := make(chan model.DiscoverItem, j.discoverBuf)
 	resultCh := make(chan model.FileResult, j.resultBuf)
 
-	walker := NewWalker(j.src, j.store, j.fileLog, durationFromSec(j.logInterval))
-	dbWriter := NewDBWriter(j.store, walker, j.fileLog)
+	logDuration := durationFromSec(j.logInterval)
+	walker := NewWalker(j.src, j.store, j.fileLog, logDuration)
+	dbWriter := NewDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
 	// Start the pipeline
 	replWg := j.startReplicators(discoverCh, resultCh)
 	dbWg := j.startDBWriter(dbWriter, resultCh)
 
-	// Close resultCh after all Replicators exit
 	go func() {
 		replWg.Wait()
 		close(resultCh)
@@ -90,15 +92,11 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 		walkErr = walker.Run(ctx, discoverCh)
 	}
 
-	// Wait for pipeline to drain
 	dbWg.Wait()
 
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
-// populateFromResume handles resume logic:
-// - walk_complete exists: ResumeFromDB (push non-done items)
-// - walk_complete absent: destroy DB, reopen, run fresh walk
 func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- model.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
@@ -106,25 +104,20 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 	}
 
 	if hasWalkComplete {
-		// Resume from DB — push non-done items, close discoverCh, set walkComplete
 		walker.ResumeFromDB(discoverCh)
 		return nil
 	}
 
-	// Walk was incomplete — destroy DB and start fresh
 	if err := j.store.Destroy(); err != nil {
 		return fmt.Errorf("destroy store for fresh start: %w", err)
 	}
-	// Re-open the store at the same directory
 	if err := j.store.Reopen(); err != nil {
 		return fmt.Errorf("reopen store: %w", err)
 	}
-	// Re-create walker since store was recreated
 	freshWalker := NewWalker(j.src, j.store, j.fileLog, durationFromSec(j.logInterval))
 	return freshWalker.Run(ctx, discoverCh)
 }
 
-// startReplicators launches N Replicator goroutines sharing discoverCh.
 func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
@@ -136,25 +129,26 @@ func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh ch
 				var err error
 				dst, err = j.dstFactory(id)
 				if err != nil {
-					// Connection failed — drain items and push errors
 					for item := range discoverCh {
 						resultCh <- model.FileResult{
 							RelPath:    item.RelPath,
+							FileType:   item.FileType,
+							FileSize:   item.FileSize,
 							CopyStatus: model.CopyError,
+							Algorithm:  string(j.cksumAlgo),
 							Err:        fmt.Errorf("create destination for replicator %d: %w", id, err),
 						}
 					}
 					return
 				}
 			}
-			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo)
+			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics)
 			r.Run(discoverCh, resultCh)
 		}(i)
 	}
 	return &wg
 }
 
-// startDBWriter launches the DBWriter goroutine.
 func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -165,7 +159,6 @@ func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult
 	return &wg
 }
 
-// finalize computes exit code, runs EnsureDirMtime, and emits completion report.
 func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
 	done, failed, total := dbWriter.Stats()
 
@@ -180,19 +173,21 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 		runErr = fmt.Errorf("%d of %d files failed", failed, total)
 	}
 
-	// EnsureDirMtime (only if walk completed and destination is local filesystem)
+	// EnsureDirMtime
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
 		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
 			_ = err
 		}
 	}
 
-	// Generate and write completion report
+	// Emit final progress_summary
+	if j.fileLog != nil {
+		dbWriter.emitProgressSummary(true, exitCode)
+	}
+
+	// Generate internal report (still used for report file, but no longer emits copy_complete)
 	if j.taskID != "" {
-		report, _ := GenerateReport(j.taskID, j.store, done, failed, exitCode)
-		if report != nil && j.fileLog != nil {
-			j.fileLog.Emit("copy_complete", report)
-		}
+		_, _ = GenerateReport(j.taskID, j.store, done, failed, exitCode)
 	}
 
 	return exitCode, runErr
@@ -203,4 +198,17 @@ func durationFromSec(sec int) time.Duration {
 		return 5 * time.Second
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// EmitCopyPlan emits a copy_plan event if fileLog is available.
+func EmitCopyPlan(fileLog FileLogger, taskID string, src []string, dst string, algo model.CksumAlgorithm) {
+	if fileLog == nil {
+		return
+	}
+	fileLog.Emit(filelog.EventCopyPlan, map[string]any{
+		"taskId":    taskID,
+		"sources":   src,
+		"dest":      dst,
+		"algorithm": string(algo),
+	})
 }

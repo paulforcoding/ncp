@@ -10,18 +10,18 @@ import (
 )
 
 // Replicator copies files from a Source to a Destination.
-// Multiple Replicators share the same discoverCh for natural load balancing.
 type Replicator struct {
-	id      int
-	src     storage.Source
-	dst     storage.Destination
-	fileLog FileLogger
-	ioSize  int // 0 means use tiered IOSize
+	id        int
+	src       storage.Source
+	dst       storage.Destination
+	fileLog   FileLogger
+	ioSize    int
 	cksumAlgo model.CksumAlgorithm
+	metrics   *ThroughputMeter
 }
 
 // NewReplicator creates a Replicator with the given ID.
-func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm) *Replicator {
+func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter) *Replicator {
 	return &Replicator{
 		id:        id,
 		src:       src,
@@ -29,6 +29,7 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 		fileLog:   fileLog,
 		ioSize:    ioSize,
 		cksumAlgo: cksumAlgo,
+		metrics:   metrics,
 	}
 }
 
@@ -54,7 +55,10 @@ func (r *Replicator) copyOne(item model.DiscoverItem) model.FileResult {
 	default:
 		return model.FileResult{
 			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.FileSize,
 			CopyStatus: model.CopyError,
+			Algorithm:  string(r.cksumAlgo),
 			Err:        fmt.Errorf("unknown file type %d", item.FileType),
 		}
 	}
@@ -66,14 +70,24 @@ func (r *Replicator) copyDir(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		status = model.CopyError
 	}
-	return model.FileResult{RelPath: item.RelPath, CopyStatus: status, Err: err}
+	return model.FileResult{
+		RelPath:    item.RelPath,
+		FileType:   item.FileType,
+		FileSize:   0,
+		CopyStatus: status,
+		Algorithm:  string(r.cksumAlgo),
+		Err:        err,
+	}
 }
 
 func (r *Replicator) copySymlink(item model.DiscoverItem) model.FileResult {
 	if item.LinkTarget == "" {
 		return model.FileResult{
 			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   0,
 			CopyStatus: model.CopyError,
+			Algorithm:  string(r.cksumAlgo),
 			Err:        fmt.Errorf("symlink target empty for %s", item.RelPath),
 		}
 	}
@@ -82,19 +96,40 @@ func (r *Replicator) copySymlink(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		status = model.CopyError
 	}
-	return model.FileResult{RelPath: item.RelPath, CopyStatus: status, Err: err}
+	return model.FileResult{
+		RelPath:    item.RelPath,
+		FileType:   item.FileType,
+		FileSize:   0,
+		CopyStatus: status,
+		Algorithm:  string(r.cksumAlgo),
+		Err:        err,
+	}
 }
 
 func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	reader, err := r.src.Open(item.RelPath)
 	if err != nil {
-		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+		return model.FileResult{
+			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.FileSize,
+			CopyStatus: model.CopyError,
+			Algorithm:  string(r.cksumAlgo),
+			Err:        err,
+		}
 	}
 	defer reader.Close()
 
 	writer, err := r.dst.OpenFile(item.RelPath, item.FileSize, os.FileMode(item.Mode), item.Uid, item.Gid)
 	if err != nil {
-		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+		return model.FileResult{
+			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.FileSize,
+			CopyStatus: model.CopyError,
+			Algorithm:  string(r.cksumAlgo),
+			Err:        err,
+		}
 	}
 
 	bufSize := r.ioSize
@@ -112,7 +147,14 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 			written, writeErr := writer.WriteAt(buf[:n], offset)
 			if writeErr != nil {
 				writer.Close(nil)
-				return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: writeErr}
+				return model.FileResult{
+					RelPath:    item.RelPath,
+					FileType:   item.FileType,
+					FileSize:   item.FileSize,
+					CopyStatus: model.CopyError,
+					Algorithm:  string(r.cksumAlgo),
+					Err:        writeErr,
+				}
 			}
 			offset += int64(written)
 		}
@@ -121,21 +163,59 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 		}
 		if readErr != nil {
 			writer.Close(nil)
-			return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: readErr}
+			return model.FileResult{
+				RelPath:    item.RelPath,
+				FileType:   item.FileType,
+				FileSize:   item.FileSize,
+				CopyStatus: model.CopyError,
+				Algorithm:  string(r.cksumAlgo),
+				Err:        readErr,
+			}
 		}
 	}
 
-	checksum := h.Sum(nil)
-	if err := writer.Close(checksum); err != nil {
-		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+	checksumBytes := h.Sum(nil)
+	if err := writer.Close(checksumBytes); err != nil {
+		return model.FileResult{
+			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.FileSize,
+			CopyStatus: model.CopyError,
+			Algorithm:  string(r.cksumAlgo),
+			Err:        err,
+		}
 	}
 
-	// Preserve file mtime (directories are handled by EnsureDirMtime)
+	// Preserve file mtime
 	if item.Mtime != 0 {
 		if err := r.dst.SetMetadata(item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
-			return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+			return model.FileResult{
+				RelPath:    item.RelPath,
+				FileType:   item.FileType,
+				FileSize:   item.FileSize,
+				CopyStatus: model.CopyError,
+				Algorithm:  string(r.cksumAlgo),
+				Err:        err,
+			}
 		}
 	}
 
-	return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyDone}
+	if r.metrics != nil {
+		r.metrics.AddFile(item.FileSize)
+	}
+
+	checksumHex := fmt.Sprintf("%x", checksumBytes)
+
+	if r.metrics != nil {
+		r.metrics.AddFile(item.FileSize)
+	}
+
+	return model.FileResult{
+		RelPath:    item.RelPath,
+		FileType:   item.FileType,
+		FileSize:   item.FileSize,
+		CopyStatus: model.CopyDone,
+		Checksum:   checksumHex,
+		Algorithm:  string(r.cksumAlgo),
+	}
 }

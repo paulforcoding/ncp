@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/copy"
-	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -27,6 +26,7 @@ type CksumJob struct {
 	discoverBuf int
 	resultBuf   int
 	resume      bool
+	metrics     *copy.ThroughputMeter
 }
 
 // NewCksumJob creates a cksum job.
@@ -39,6 +39,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 		cksumAlgo:   model.DefaultCksumAlgorithm,
 		discoverBuf: 100000,
 		resultBuf:   100000,
+		metrics:     &copy.ThroughputMeter{},
 	}
 	for _, o := range opts {
 		o(j)
@@ -49,7 +50,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 // CksumJobOption configures a CksumJob.
 type CksumJobOption func(*CksumJob)
 
-func WithCksumParallelism(n int) CksumJobOption              { return func(j *CksumJob) { j.parallelism = n } }
+func WithCksumParallelism(n int) CksumJobOption { return func(j *CksumJob) { j.parallelism = n } }
 func WithCksumFileLog(fl copy.FileLogger, sec int) CksumJobOption {
 	return func(j *CksumJob) { j.fileLog = fl; j.logInterval = sec }
 }
@@ -59,25 +60,22 @@ func WithCksumResume(v bool) CksumJobOption                  { return func(j *Ck
 func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption { return func(j *CksumJob) { j.cksumAlgo = algo } }
 
 // Run executes the checksum job and blocks until completion.
-// Returns exit code: 0=all pass, 2=mismatch or error.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {
 	cksumCh := make(chan model.DiscoverItem, j.discoverBuf)
 	resultCh := make(chan model.FileResult, j.resultBuf)
 
-	walker := copy.NewWalker(j.src, j.store, j.fileLog, durationFromSec(j.logInterval))
-	dbWriter := NewCksumDBWriter(j.store, walker, j.fileLog)
+	logDuration := durationFromSec(j.logInterval)
+	walker := copy.NewWalker(j.src, j.store, j.fileLog, logDuration)
+	dbWriter := NewCksumDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
-	// Start the pipeline
 	workerWg := j.startCksumWorkers(cksumCh, resultCh)
 	dbWg := j.startCksumDBWriter(dbWriter, resultCh)
 
-	// Close resultCh after all workers exit
 	go func() {
 		workerWg.Wait()
 		close(resultCh)
 	}()
 
-	// Populate cksumCh
 	var walkErr error
 	if j.resume {
 		walkErr = j.populateFromResume(ctx, walker, cksumCh)
@@ -85,15 +83,11 @@ func (j *CksumJob) Run(ctx context.Context) (int, error) {
 		walkErr = walker.Run(ctx, cksumCh)
 	}
 
-	// Wait for pipeline to drain
 	dbWg.Wait()
 
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
-// populateFromResume handles cksum resume logic:
-// - walk_complete exists: push files needing cksum from DB
-// - walk_complete absent: destroy DB, reopen, run fresh walk
 func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, cksumCh chan<- model.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
@@ -105,7 +99,6 @@ func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, 
 		return nil
 	}
 
-	// Walk was incomplete — destroy DB and start fresh
 	if err := j.store.Destroy(); err != nil {
 		return fmt.Errorf("destroy store for fresh start: %w", err)
 	}
@@ -153,12 +146,14 @@ func (j *CksumJob) finalize(walker *copy.Walker, dbWriter *CksumDBWriter, walkEr
 		runErr = fmt.Errorf("%d mismatch, %d error of %d files", mismatch, failed, total)
 	}
 
-	// Generate and write completion report
+	// Emit final progress_summary
+	if j.fileLog != nil {
+		dbWriter.emitProgressSummary(true, exitCode)
+	}
+
+	// Generate internal report (still used for report file, but no longer emits cksum_complete)
 	if j.taskID != "" {
-		report, _ := GenerateCksumReport(j.taskID, j.store, pass, mismatch, failed, exitCode)
-		if report != nil && j.fileLog != nil {
-			j.fileLog.Emit(filelog.EventCksumComplete, report)
-		}
+		_, _ = GenerateCksumReport(j.taskID, j.store, pass, mismatch, failed, exitCode)
 	}
 
 	return exitCode, runErr

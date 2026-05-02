@@ -50,7 +50,10 @@ func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
 	default:
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    item.FileSize,
 			CksumStatus: model.CksumError,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("unknown file type %d", item.FileType),
 		}
 	}
@@ -61,7 +64,11 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    item.FileSize,
 			CksumStatus: model.CksumError,
+			Algorithm:   string(w.cksumAlgo),
+			SrcHash:     srcHash,
 			Err:         fmt.Errorf("src read: %w", err),
 		}
 	}
@@ -70,7 +77,12 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    item.FileSize,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
+			SrcHash:     srcHash,
+			DstHash:     dstHash,
 			Err:         fmt.Errorf("dst read: %w", err),
 		}
 	}
@@ -78,13 +90,23 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	if srcHash == dstHash {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    item.FileSize,
 			CksumStatus: model.CksumPass,
+			Algorithm:   string(w.cksumAlgo),
+			SrcHash:     srcHash,
+			DstHash:     dstHash,
 		}
 	}
 
 	return model.FileResult{
 		RelPath:     item.RelPath,
+		FileType:    item.FileType,
+		FileSize:    item.FileSize,
 		CksumStatus: model.CksumMismatch,
+		Algorithm:   string(w.cksumAlgo),
+		SrcHash:     srcHash,
+		DstHash:     dstHash,
 		Err:         fmt.Errorf("%s mismatch: src=%s dst=%s", w.cksumAlgo, srcHash, dstHash),
 	}
 }
@@ -126,20 +148,29 @@ func (w *CksumWorker) cksumDir(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("dst restat dir: %w", err),
 		}
 	}
 	if dstItem.FileType != model.FileDir {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("dst is not a directory"),
 		}
 	}
 	return model.FileResult{
 		RelPath:     item.RelPath,
+		FileType:    item.FileType,
+		FileSize:    0,
 		CksumStatus: model.CksumPass,
+		Algorithm:   string(w.cksumAlgo),
 	}
 }
 
@@ -148,26 +179,38 @@ func (w *CksumWorker) cksumSymlink(item model.DiscoverItem) model.FileResult {
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("dst restat symlink: %w", err),
 		}
 	}
 	if dstItem.FileType != model.FileSymlink {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("dst is not a symlink"),
 		}
 	}
 	if dstItem.LinkTarget != item.LinkTarget {
 		return model.FileResult{
 			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
+			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("symlink target mismatch: src=%q dst=%q", item.LinkTarget, dstItem.LinkTarget),
 		}
 	}
 	return model.FileResult{
 		RelPath:     item.RelPath,
+		FileType:    item.FileType,
+		FileSize:    0,
 		CksumStatus: model.CksumPass,
+		Algorithm:   string(w.cksumAlgo),
 	}
 }
