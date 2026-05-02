@@ -1,7 +1,6 @@
 package cksum
 
 import (
-	"crypto/md5"
 	"fmt"
 	"io"
 
@@ -10,23 +9,25 @@ import (
 	"github.com/zp001/ncp/pkg/model"
 )
 
-// CksumWorker compares source and destination files by computing MD5 checksums.
+// CksumWorker compares source and destination files by computing checksums.
 type CksumWorker struct {
-	id      int
-	src     storage.Source
-	dst     storage.Source
-	fileLog copy.FileLogger
-	ioSize  int
+	id        int
+	src       storage.Source
+	dst       storage.Source
+	fileLog   copy.FileLogger
+	ioSize    int
+	cksumAlgo model.CksumAlgorithm
 }
 
 // NewCksumWorker creates a CksumWorker.
-func NewCksumWorker(id int, src, dst storage.Source, fileLog copy.FileLogger, ioSize int) *CksumWorker {
+func NewCksumWorker(id int, src, dst storage.Source, fileLog copy.FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm) *CksumWorker {
 	return &CksumWorker{
-		id:      id,
-		src:     src,
-		dst:     dst,
-		fileLog: fileLog,
-		ioSize:  ioSize,
+		id:        id,
+		src:       src,
+		dst:       dst,
+		fileLog:   fileLog,
+		ioSize:    ioSize,
+		cksumAlgo: cksumAlgo,
 	}
 }
 
@@ -56,7 +57,7 @@ func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
 }
 
 func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
-	srcMD5, err := w.computeMD5(w.src, item.RelPath)
+	srcHash, err := w.computeHash(w.src, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
@@ -65,9 +66,8 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 		}
 	}
 
-	dstMD5, err := w.computeMD5(w.dst, item.RelPath)
+	dstHash, err := w.computeHash(w.dst, item.RelPath)
 	if err != nil {
-		// Destination file doesn't exist or unreadable
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			CksumStatus: model.CksumMismatch,
@@ -75,7 +75,7 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 		}
 	}
 
-	if srcMD5 == dstMD5 {
+	if srcHash == dstHash {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			CksumStatus: model.CksumPass,
@@ -85,11 +85,11 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	return model.FileResult{
 		RelPath:     item.RelPath,
 		CksumStatus: model.CksumMismatch,
-		Err:         fmt.Errorf("md5 mismatch: src=%s dst=%s", srcMD5, dstMD5),
+		Err:         fmt.Errorf("%s mismatch: src=%s dst=%s", w.cksumAlgo, srcHash, dstHash),
 	}
 }
 
-func (w *CksumWorker) computeMD5(src storage.Source, relPath string) (string, error) {
+func (w *CksumWorker) computeHash(src storage.Source, relPath string) (string, error) {
 	reader, err := src.Open(relPath)
 	if err != nil {
 		return "", err
@@ -98,11 +98,11 @@ func (w *CksumWorker) computeMD5(src storage.Source, relPath string) (string, er
 
 	bufSize := w.ioSize
 	if bufSize <= 0 {
-		bufSize = 128 * 1024 // 128KB default for checksumming
+		bufSize = 128 * 1024
 	}
 	buf := make([]byte, bufSize)
 
-	h := md5.New()
+	h := copy.NewHasher(w.cksumAlgo)
 	var offset int64
 	for {
 		n, readErr := reader.ReadAt(buf, offset)
@@ -118,7 +118,7 @@ func (w *CksumWorker) computeMD5(src storage.Source, relPath string) (string, er
 		}
 	}
 
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return copy.SumToHex(h), nil
 }
 
 func (w *CksumWorker) cksumDir(item model.DiscoverItem) model.FileResult {

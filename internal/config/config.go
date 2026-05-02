@@ -23,6 +23,7 @@ type Config struct {
 	EnsureDirMtime    bool               `json:"EnsureDirMtime" mapstructure:"EnsureDirMtime"`
 	ProgressStorePath string             `json:"ProgressStorePath" mapstructure:"ProgressStorePath"`
 	ServerListenAddr  string             `json:"ServerListenAddr" mapstructure:"ServerListenAddr"`
+	CksumAlgorithm    string             `json:"CksumAlgorithm" mapstructure:"CksumAlgorithm"`
 
 	// OSS configuration
 	OSSEndpoint string `json:"OSSEndpoint,omitempty" mapstructure:"OSSEndpoint"`
@@ -50,6 +51,7 @@ func DefaultConfig() Config {
 		EnsureDirMtime:    true,
 		ProgressStorePath: "./progress",
 		ServerListenAddr:  ":9900",
+		CksumAlgorithm:    string(model.DefaultCksumAlgorithm),
 	}
 }
 

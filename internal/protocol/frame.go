@@ -3,14 +3,15 @@ package protocol
 import (
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"io"
 )
 
 const (
-	Magic   uint32 = 0x4E435003 // "NCP\x03"
-	Version uint8  = 1
+	Magic   uint32 = 0x4E435004 // "NCP\x04" — bumped for CRC32
+	Version uint8  = 2
 
-	HeaderSize    = 10 // 4 (magic) + 1 (version) + 1 (type) + 4 (length)
+	HeaderSize    = 14 // 4 (magic) + 1 (version) + 1 (type) + 4 (length) + 4 (crc32)
 	MaxPayloadSize = 16 * 1024 * 1024 // 16 MB
 )
 
@@ -18,7 +19,10 @@ var (
 	ErrBadMagic   = errors.New("protocol: bad magic")
 	ErrBadVersion = errors.New("protocol: bad version")
 	ErrTooLarge   = errors.New("protocol: payload too large")
+	ErrCRC        = errors.New("protocol: CRC32 mismatch")
 )
+
+var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Frame represents a decoded protocol frame.
 type Frame struct {
@@ -27,17 +31,20 @@ type Frame struct {
 	Payload []byte
 }
 
-// WriteFrame encodes and writes a frame to w.
+// WriteFrame encodes and writes a frame to w with a CRC32 checksum.
 func WriteFrame(w io.Writer, msgType uint8, payload []byte) error {
 	if len(payload) > MaxPayloadSize {
 		return ErrTooLarge
 	}
+
+	crc := crc32.Checksum(payload, crcTable)
 
 	var hdr [HeaderSize]byte
 	binary.BigEndian.PutUint32(hdr[0:4], Magic)
 	hdr[4] = Version
 	hdr[5] = msgType
 	binary.BigEndian.PutUint32(hdr[6:10], uint32(len(payload)))
+	binary.BigEndian.PutUint32(hdr[10:14], crc)
 
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
@@ -50,7 +57,7 @@ func WriteFrame(w io.Writer, msgType uint8, payload []byte) error {
 	return nil
 }
 
-// ReadFrame reads and decodes a frame from r.
+// ReadFrame reads and decodes a frame from r, verifying the CRC32 checksum.
 func ReadFrame(r io.Reader) (*Frame, error) {
 	var hdr [HeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -67,6 +74,7 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 
 	msgType := hdr[5]
 	length := binary.BigEndian.Uint32(hdr[6:10])
+	expectedCRC := binary.BigEndian.Uint32(hdr[10:14])
 	if length > MaxPayloadSize {
 		return nil, ErrTooLarge
 	}
@@ -76,6 +84,10 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 		if _, err := io.ReadFull(r, payload); err != nil {
 			return nil, err
 		}
+	}
+
+	if crc32.Checksum(payload, crcTable) != expectedCRC {
+		return nil, ErrCRC
 	}
 
 	return &Frame{Version: v, Type: msgType, Payload: payload}, nil

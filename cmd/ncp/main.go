@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -33,15 +34,16 @@ func main() {
 		Use:           "ncp",
 		Short:         "ncp — Agent-First file copy tool for massive-scale data migration",
 		Long:          `ncp copies files to remote servers and cloud object storage with DB-backed progress tracking and Agent-First structured output.`,
+		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
 
 	copyCmd := &cobra.Command{
-		Use:   "copy <src> <dst>",
+		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
-		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://).",
-		Args:  cobra.MaximumNArgs(2),
+		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Multiple sources are copied into subdirectories of dst named after each source's basename.",
+		Args:  cobra.MinimumNArgs(2),
 		RunE:  runCopy,
 	}
 
@@ -67,6 +69,7 @@ func main() {
 	copyCmd.Flags().String("region", "", "OSS region (e.g. cn-shenzhen)")
 	copyCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
 	copyCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
+		copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 
 	// Bind all flags to Viper
 	v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -84,6 +87,7 @@ func main() {
 	v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
 	v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
 	v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
+		v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -172,6 +176,7 @@ func main() {
 	cksumCmd.Flags().String("region", "", "OSS region")
 	cksumCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
 	cksumCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
+		cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 
 	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd)
 
@@ -215,8 +220,8 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("copy requires <src> and <dst> arguments when not using --task")
 	}
 
-	srcPath := args[0]
-	dstPath := args[1]
+	srcPaths := args[:len(args)-1]
+	dstPath := args[len(args)-1]
 
 	taskID = task.GenerateTaskID()
 	progressDir := cfg.ProgressStorePath
@@ -230,7 +235,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	// Write meta.json
-	meta := task.NewMeta(taskID, srcPath, dstPath, os.Args[1:], task.JobTypeCopy)
+	meta := task.NewMeta(taskID, strings.Join(srcPaths, ","), dstPath, os.Args[1:], task.JobTypeCopy)
 	if err := task.WriteMetaTo(meta, progressDir); err != nil {
 		return fmt.Errorf("write meta: %w", err)
 	}
@@ -243,7 +248,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	defer fl.Close()
 
 	// Dependency injection
-	src, dst, store, extraOpts, err := setupCopyDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, dstPath, progressDir, taskID)
 	if err != nil {
 		return err
 	}
@@ -256,6 +261,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		copy.WithTaskID(taskID),
 		copy.WithDstBase(dstPath),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
+		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -304,7 +310,8 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	}
 	defer fl.Close()
 
-	src, dst, store, extraOpts, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	srcPaths := strings.Split(meta.SrcBase, ",")
+	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return err
 	}
@@ -317,6 +324,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		copy.WithTaskID(taskID),
 		copy.WithDstBase(meta.DstBase),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
+		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
@@ -393,7 +401,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 }
 
 func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
-	src, dst, store, extraOpts, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	srcPaths := strings.Split(meta.SrcBase, ",")
+	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return 1, err
 	}
@@ -406,6 +415,7 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 		copy.WithTaskID(taskID),
 		copy.WithDstBase(meta.DstBase),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
+		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
@@ -426,6 +436,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
 		cksum.WithCksumTaskID(taskID),
+		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
 	)
 	return job.Run(ctx)
@@ -447,6 +458,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
 	v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
 	v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
+		v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
 
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
@@ -502,6 +514,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
 		cksum.WithCksumTaskID(taskID),
+		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 	)
 
 	exitCode, err := job.Run(ctx)
@@ -555,6 +568,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
 		cksum.WithCksumTaskID(taskID),
+		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
 	)
 
@@ -728,6 +742,12 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 // setupCopyDeps creates Source, Destination, and opens the Pebble store.
 // For ncp:// destinations, returns a dstFactory via extraOpts instead of a shared dst.
 func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
+	return setupCopyDepsMulti(cfg, []string{srcPath}, dstPath, progressDir, taskID)
+}
+
+// setupCopyDepsMulti supports multiple source paths. Single source falls through
+// to the same path; multiple sources create a di.MultiSource.
+func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
 	ossCfg := di.OSSConfig{
 		Endpoint: cfg.OSSEndpoint,
 		Region:   cfg.OSSRegion,
@@ -735,9 +755,26 @@ func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID str
 		SK:       cfg.OSSSK,
 	}
 
-	src, err := di.NewSourceWithOSS(srcPath, ossCfg)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+	var src storage.Source
+	var err error
+
+	if len(srcPaths) == 1 {
+		src, err = di.NewSourceWithOSS(srcPaths[0], ossCfg)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+		}
+	} else {
+		sources := make([]storage.Source, len(srcPaths))
+		for i, sp := range srcPaths {
+			sources[i], err = di.NewSourceWithOSS(sp, ossCfg)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
+			}
+		}
+		src, err = di.NewMultiSource(sources)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("create multi-source: %w", err)
+		}
 	}
 
 	var extraOpts []copy.JobOption
@@ -801,4 +838,13 @@ func resolveBoolFlag(cmd *cobra.Command, viperKey, enableFlag, disableFlag strin
 	} else if enabled, _ := cmd.Flags().GetBool(enableFlag); enabled {
 		v.Set(viperKey, true)
 	}
+}
+
+// resolveCksumAlgo parses the CksumAlgorithm from config, returning the model value.
+func resolveCksumAlgo(cfg *config.Config) model.CksumAlgorithm {
+	algo, err := model.ParseCksumAlgorithm(cfg.CksumAlgorithm)
+	if err != nil {
+		return model.DefaultCksumAlgorithm
+	}
+	return algo
 }

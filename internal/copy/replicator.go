@@ -1,7 +1,6 @@
 package copy
 
 import (
-	"crypto/md5"
 	"fmt"
 	"io"
 	"os"
@@ -18,16 +17,18 @@ type Replicator struct {
 	dst     storage.Destination
 	fileLog FileLogger
 	ioSize  int // 0 means use tiered IOSize
+	cksumAlgo model.CksumAlgorithm
 }
 
 // NewReplicator creates a Replicator with the given ID.
-func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int) *Replicator {
+func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm) *Replicator {
 	return &Replicator{
-		id:      id,
-		src:     src,
-		dst:     dst,
-		fileLog: fileLog,
-		ioSize:  ioSize,
+		id:        id,
+		src:       src,
+		dst:       dst,
+		fileLog:   fileLog,
+		ioSize:    ioSize,
+		cksumAlgo: cksumAlgo,
 	}
 }
 
@@ -103,11 +104,11 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	buf := make([]byte, bufSize)
 
 	var offset int64
-	md5Hash := md5.New()
+	h := NewHasher(r.cksumAlgo)
 	for {
 		n, readErr := reader.ReadAt(buf, offset)
 		if n > 0 {
-			md5Hash.Write(buf[:n])
+			h.Write(buf[:n])
 			written, writeErr := writer.WriteAt(buf[:n], offset)
 			if writeErr != nil {
 				writer.Close(nil)
@@ -124,9 +125,16 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 		}
 	}
 
-	checksum := md5Hash.Sum(nil)
+	checksum := h.Sum(nil)
 	if err := writer.Close(checksum); err != nil {
 		return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+	}
+
+	// Preserve file mtime (directories are handled by EnsureDirMtime)
+	if item.Mtime != 0 {
+		if err := r.dst.SetMetadata(item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
+			return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyError, Err: err}
+		}
 	}
 
 	return model.FileResult{RelPath: item.RelPath, CopyStatus: model.CopyDone}
