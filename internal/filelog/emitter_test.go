@@ -12,9 +12,13 @@ func TestEmitterConsole(t *testing.T) {
 	var buf bytes.Buffer
 	e := &Emitter{w: &buf, taskID: "task-test", enabled: true}
 
-	e.Emit(EventFileComplete, FileCompleteData{
-		RelPath:  "dir/file.txt",
-		FileSize: 1024,
+	e.Emit(EventFileComplete, map[string]any{
+		"action":    "copy",
+		"result":    "done",
+		"errorCode": "",
+		"relPath":   "dir/file.txt",
+		"fileType":  "regular",
+		"fileSize":  1024,
 	})
 
 	if buf.Len() == 0 {
@@ -31,11 +35,16 @@ func TestEmitterConsole(t *testing.T) {
 	if entry["taskId"] != "task-test" {
 		t.Fatalf("expected taskId task-test, got %v", entry["taskId"])
 	}
+	if entry["action"] != "copy" {
+		t.Fatalf("expected action copy, got %v", entry["action"])
+	}
+	if entry["relPath"] != "dir/file.txt" {
+		t.Fatalf("expected relPath dir/file.txt, got %v", entry["relPath"])
+	}
 }
 
 func TestEmitterDisabled(t *testing.T) {
 	e := &Emitter{enabled: false}
-	// Should not panic
 	e.Emit(EventFileComplete, nil)
 }
 
@@ -43,15 +52,15 @@ func TestEmitterMapData(t *testing.T) {
 	var buf bytes.Buffer
 	e := &Emitter{w: &buf, taskID: "t1", enabled: true}
 
-	e.Emit(EventWalkProgress, map[string]any{
-		"discoveredCount": 100,
-		"currentPath":     "a/b",
+	e.Emit(EventProgressSummary, map[string]any{
+		"phase":    "copy",
+		"finished": false,
 	})
 
 	var entry map[string]any
 	json.Unmarshal(buf.Bytes(), &entry)
-	if entry["discoveredCount"] != float64(100) {
-		t.Fatalf("expected 100, got %v", entry["discoveredCount"])
+	if entry["phase"] != "copy" {
+		t.Fatalf("expected copy, got %v", entry["phase"])
 	}
 }
 

@@ -16,13 +16,14 @@ const (
 )
 
 // CksumDBWriter consumes FileResults from resultCh and updates cksumStatus in DB.
-// It preserves the existing copyStatus and only updates the cksumStatus byte.
 type CksumDBWriter struct {
 	store        progress.ProgressStore
 	walker       *copy.Walker
 	fileLog      copy.FileLogger
 	batchSize    int
 	batchTimeout time.Duration
+	metrics      *copy.ThroughputMeter
+	logInterval  time.Duration
 
 	mu       sync.Mutex
 	batch    []model.FileResult
@@ -33,11 +34,13 @@ type CksumDBWriter struct {
 }
 
 // NewCksumDBWriter creates a CksumDBWriter.
-func NewCksumDBWriter(store progress.ProgressStore, walker *copy.Walker, fileLog copy.FileLogger) *CksumDBWriter {
+func NewCksumDBWriter(store progress.ProgressStore, walker *copy.Walker, fileLog copy.FileLogger, metrics *copy.ThroughputMeter, logInterval time.Duration) *CksumDBWriter {
 	return &CksumDBWriter{
 		store:        store,
 		walker:       walker,
 		fileLog:      fileLog,
+		metrics:      metrics,
+		logInterval:  logInterval,
 		batchSize:    cksumDefaultBatchSize,
 		batchTimeout: cksumDefaultBatchTimeout,
 	}
@@ -47,6 +50,8 @@ func NewCksumDBWriter(store progress.ProgressStore, walker *copy.Walker, fileLog
 func (dw *CksumDBWriter) Run(resultCh <-chan model.FileResult) {
 	ticker := time.NewTicker(dw.batchTimeout)
 	defer ticker.Stop()
+
+	var lastProgressTime time.Time
 
 	for {
 		select {
@@ -76,6 +81,11 @@ func (dw *CksumDBWriter) Run(resultCh <-chan model.FileResult) {
 			if dw.walker.WalkComplete() && len(dw.batch) > 0 {
 				dw.flushLocked()
 			}
+			// Emit progress_summary
+			if dw.fileLog != nil && dw.logInterval > 0 && time.Since(lastProgressTime) >= dw.logInterval {
+				dw.emitProgressSummary(false, 0)
+				lastProgressTime = time.Now()
+			}
 			dw.mu.Unlock()
 		}
 	}
@@ -86,6 +96,13 @@ func (dw *CksumDBWriter) Stats() (pass, mismatch, failed, total int64) {
 	dw.mu.Lock()
 	defer dw.mu.Unlock()
 	return dw.pass, dw.mismatch, dw.failed, dw.total
+}
+
+// PendingCount returns the number of results waiting in the current batch.
+func (dw *CksumDBWriter) PendingCount() int {
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+	return len(dw.batch)
 }
 
 func (dw *CksumDBWriter) flush() {
@@ -101,10 +118,9 @@ func (dw *CksumDBWriter) flushLocked() {
 
 	batch := dw.store.Batch()
 	for _, r := range dw.batch {
-		// Preserve existing copyStatus, only update cksumStatus
 		cs, _, err := dw.store.Get(r.RelPath)
 		if err != nil {
-			cs = model.CopyDone // best guess for cksum items
+			cs = model.CopyDone
 		}
 		batch.Set(r.RelPath, cs, r.CksumStatus)
 	}
@@ -114,19 +130,74 @@ func (dw *CksumDBWriter) flushLocked() {
 	}
 	batch.Close()
 
-	// Emit FileLog events
+	// Emit unified file_complete events
 	if dw.fileLog != nil {
 		for _, r := range dw.batch {
-			switch r.CksumStatus {
-			case model.CksumPass:
-				dw.fileLog.Emit(filelog.EventCksumPass, r)
-			case model.CksumMismatch:
-				dw.fileLog.Emit(filelog.EventCksumMismatch, r)
-			case model.CksumError:
-				dw.fileLog.Emit(filelog.EventCksumError, r)
-			}
+			dw.emitFileComplete(r)
 		}
 	}
 
 	dw.batch = dw.batch[:0]
+}
+
+func (dw *CksumDBWriter) emitFileComplete(r model.FileResult) {
+	result := "done"
+	errorCode := ""
+	if r.CksumStatus == model.CksumMismatch || r.CksumStatus == model.CksumError {
+		result = "error"
+		if r.Err != nil {
+			errorCode = r.Err.Error()
+		}
+	}
+
+	data := map[string]any{
+		"action":    "cksum",
+		"result":    result,
+		"errorCode": errorCode,
+		"relPath":   r.RelPath,
+		"fileType":  r.FileType.String(),
+		"fileSize":  r.FileSize,
+		"algorithm": r.Algorithm,
+		"checksum":  r.Checksum,
+		"srcHash":   r.SrcHash,
+		"dstHash":   r.DstHash,
+	}
+	dw.fileLog.Emit(filelog.EventFileComplete, data)
+}
+
+func (dw *CksumDBWriter) emitProgressSummary(finished bool, exitCode int) {
+	walkerStats := dw.walker.Stats()
+
+	var filesPerSec, bytesPerSec float64
+	var filesCopied, bytesCopied int64
+	if dw.metrics != nil {
+		filesPerSec, bytesPerSec = dw.metrics.Rate()
+		filesCopied, bytesCopied = dw.metrics.Totals()
+	}
+
+	data := map[string]any{
+		"phase":    "cksum",
+		"finished": finished,
+		"exitCode": exitCode,
+		"walker": map[string]any{
+			"walkComplete":    walkerStats.WalkComplete,
+			"discoveredCount": walkerStats.DiscoveredCount,
+			"dispatchedCount": walkerStats.DispatchedCount,
+			"backlogCount":    walkerStats.BacklogCount,
+			"channelFull":     walkerStats.ChannelFull,
+		},
+		"replicator": map[string]any{
+			"filesCopied": filesCopied,
+			"bytesCopied": bytesCopied,
+			"filesPerSec": filesPerSec,
+			"bytesPerSec": bytesPerSec,
+		},
+		"dbWriter": map[string]any{
+			"pendingCount":   dw.PendingCount(),
+			"totalDone":      dw.pass,
+			"totalFailed":    dw.mismatch + dw.failed,
+			"totalProcessed": dw.total,
+		},
+	}
+	dw.fileLog.Emit(filelog.EventProgressSummary, data)
 }

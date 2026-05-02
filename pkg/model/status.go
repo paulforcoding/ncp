@@ -30,6 +30,51 @@ const (
 	FileSymlink
 )
 
+func (s CopyStatus) String() string {
+	switch s {
+	case CopyDiscovered:
+		return "discovered"
+	case CopyDispatched:
+		return "dispatched"
+	case CopyDone:
+		return "done"
+	case CopyError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+func (s CksumStatus) String() string {
+	switch s {
+	case CksumNone:
+		return "none"
+	case CksumPending:
+		return "pending"
+	case CksumPass:
+		return "pass"
+	case CksumMismatch:
+		return "mismatch"
+	case CksumError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+func (t FileType) String() string {
+	switch t {
+	case FileRegular:
+		return "regular"
+	case FileDir:
+		return "dir"
+	case FileSymlink:
+		return "symlink"
+	default:
+		return "unknown"
+	}
+}
+
 // EncodeDBValue packs copyStatus and cksumStatus into a 2-byte slice.
 func EncodeDBValue(cs CopyStatus, cks CksumStatus) []byte {
 	return []byte{byte(cs), byte(cks)}

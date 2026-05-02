@@ -4,23 +4,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/model"
 )
 
 const (
 	defaultBatchSize    = 100
-	defaultBatchTimeout = 5 * time.Second // NFR14: max 5s between Syncs
+	defaultBatchTimeout = 5 * time.Second
 )
 
 // DBWriter consumes FileResults from resultCh and batches writes to Pebble.
-// It waits for walkComplete before writing to DB to avoid contention with Walker.
 type DBWriter struct {
-	store       progress.ProgressStore
-	walker      *Walker
-	fileLog     FileLogger
-	batchSize   int
+	store        progress.ProgressStore
+	walker       *Walker
+	fileLog      FileLogger
+	batchSize    int
 	batchTimeout time.Duration
+	metrics      *ThroughputMeter
+	logInterval  time.Duration
 
 	mu      sync.Mutex
 	batch   []model.FileResult
@@ -30,11 +32,13 @@ type DBWriter struct {
 }
 
 // NewDBWriter creates a DBWriter.
-func NewDBWriter(store progress.ProgressStore, walker *Walker, fileLog FileLogger) *DBWriter {
+func NewDBWriter(store progress.ProgressStore, walker *Walker, fileLog FileLogger, metrics *ThroughputMeter, logInterval time.Duration) *DBWriter {
 	return &DBWriter{
 		store:        store,
 		walker:       walker,
 		fileLog:      fileLog,
+		metrics:      metrics,
+		logInterval:  logInterval,
 		batchSize:    defaultBatchSize,
 		batchTimeout: defaultBatchTimeout,
 	}
@@ -45,11 +49,12 @@ func (dw *DBWriter) Run(resultCh <-chan model.FileResult) {
 	ticker := time.NewTicker(dw.batchTimeout)
 	defer ticker.Stop()
 
+	var lastProgressTime time.Time
+
 	for {
 		select {
 		case r, ok := <-resultCh:
 			if !ok {
-				// All replicators done, flush remaining
 				dw.flush()
 				return
 			}
@@ -71,6 +76,11 @@ func (dw *DBWriter) Run(resultCh <-chan model.FileResult) {
 			if dw.walker.WalkComplete() && len(dw.batch) > 0 {
 				dw.flushLocked()
 			}
+			// Emit progress_summary
+			if dw.fileLog != nil && dw.logInterval > 0 && time.Since(lastProgressTime) >= dw.logInterval {
+				dw.emitProgressSummary(false, 0)
+				lastProgressTime = time.Now()
+			}
 			dw.mu.Unlock()
 		}
 	}
@@ -81,6 +91,13 @@ func (dw *DBWriter) Stats() (done, failed, total int64) {
 	dw.mu.Lock()
 	defer dw.mu.Unlock()
 	return dw.done, dw.failed, dw.total
+}
+
+// PendingCount returns the number of results waiting in the current batch.
+func (dw *DBWriter) PendingCount() int {
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+	return len(dw.batch)
 }
 
 func (dw *DBWriter) flush() {
@@ -99,23 +116,79 @@ func (dw *DBWriter) flushLocked() {
 		batch.Set(r.RelPath, r.CopyStatus, r.CksumStatus)
 	}
 	if err := batch.Commit(true); err != nil {
-		// Best-effort: log error but don't crash
 		batch.Close()
 		return
 	}
 	batch.Close()
 
-	// Emit FileLog events
+	// Emit file_complete events
 	if dw.fileLog != nil {
 		for _, r := range dw.batch {
-			switch r.CopyStatus {
-			case model.CopyDone:
-				dw.fileLog.Emit("file_complete", r)
-			case model.CopyError:
-				dw.fileLog.Emit("file_error", r)
-			}
+			dw.emitFileComplete(r)
 		}
 	}
 
 	dw.batch = dw.batch[:0]
+}
+
+func (dw *DBWriter) emitFileComplete(r model.FileResult) {
+	result := "done"
+	errorCode := ""
+	if r.CopyStatus == model.CopyError {
+		result = "error"
+		if r.Err != nil {
+			errorCode = r.Err.Error()
+		}
+	}
+
+	data := map[string]any{
+		"action":    "copy",
+		"result":    result,
+		"errorCode": errorCode,
+		"relPath":   r.RelPath,
+		"fileType":  r.FileType.String(),
+		"fileSize":  r.FileSize,
+		"algorithm": r.Algorithm,
+		"checksum":  r.Checksum,
+		"srcHash":   r.SrcHash,
+		"dstHash":   r.DstHash,
+	}
+	dw.fileLog.Emit(filelog.EventFileComplete, data)
+}
+
+func (dw *DBWriter) emitProgressSummary(finished bool, exitCode int) {
+	walkerStats := dw.walker.Stats()
+
+	var filesPerSec, bytesPerSec float64
+	var filesCopied, bytesCopied int64
+	if dw.metrics != nil {
+		filesPerSec, bytesPerSec = dw.metrics.Rate()
+		filesCopied, bytesCopied = dw.metrics.Totals()
+	}
+
+	data := map[string]any{
+		"phase":    "copy",
+		"finished": finished,
+		"exitCode": exitCode,
+		"walker": map[string]any{
+			"walkComplete":    walkerStats.WalkComplete,
+			"discoveredCount": walkerStats.DiscoveredCount,
+			"dispatchedCount": walkerStats.DispatchedCount,
+			"backlogCount":    walkerStats.BacklogCount,
+			"channelFull":     walkerStats.ChannelFull,
+		},
+		"replicator": map[string]any{
+			"filesCopied": filesCopied,
+			"bytesCopied": bytesCopied,
+			"filesPerSec": filesPerSec,
+			"bytesPerSec": bytesPerSec,
+		},
+		"dbWriter": map[string]any{
+			"pendingCount":   dw.PendingCount(),
+			"totalDone":      dw.done,
+			"totalFailed":    dw.failed,
+			"totalProcessed": dw.total,
+		},
+	}
+	dw.fileLog.Emit(filelog.EventProgressSummary, data)
 }

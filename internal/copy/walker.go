@@ -2,8 +2,8 @@ package copy
 
 import (
 	"context"
-	"time"
 	"sync/atomic"
+	"time"
 
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -11,6 +11,15 @@ import (
 )
 
 const batchThreshold = 1000
+
+// WalkerStats holds point-in-time Walker statistics for progress reporting.
+type WalkerStats struct {
+	WalkComplete    bool
+	DiscoveredCount int64
+	DispatchedCount int64
+	BacklogCount    int64
+	ChannelFull     bool
+}
 
 // Walker traverses a source directory, writes progress to DB,
 // and pushes discovered items to discoverCh.
@@ -20,6 +29,11 @@ type Walker struct {
 	walkDone    atomic.Bool
 	fileLog     FileLogger
 	logInterval time.Duration
+
+	discoveredCount atomic.Int64
+	dispatchedCount atomic.Int64
+	backlogCount    atomic.Int64
+	channelFull     atomic.Bool
 }
 
 // FileLogger emits structured events for FileLog output.
@@ -42,6 +56,17 @@ func (w *Walker) WalkComplete() bool {
 	return w.walkDone.Load()
 }
 
+// Stats returns current Walker statistics.
+func (w *Walker) Stats() WalkerStats {
+	return WalkerStats{
+		WalkComplete:    w.walkDone.Load(),
+		DiscoveredCount: w.discoveredCount.Load(),
+		DispatchedCount: w.dispatchedCount.Load(),
+		BacklogCount:    w.backlogCount.Load(),
+		ChannelFull:     w.channelFull.Load(),
+	}
+}
+
 // Run traverses the source, writes progress, and pushes to discoverCh.
 func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) error {
 	defer func() {
@@ -52,21 +77,23 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 	pushEnabled := true
 	batch := w.store.Batch()
 	batchCount := 0
-	walkCount := 0
-	lastProgressTime := time.Now()
 
 	err := w.src.Walk(ctx, func(item model.DiscoverItem) error {
-		walkCount++
+		w.discoveredCount.Add(1)
 
 		if pushEnabled {
 			select {
 			case discoverCh <- item:
+				w.dispatchedCount.Add(1)
 				batch.Set(item.RelPath, model.CopyDispatched, model.CksumNone)
 			default:
 				pushEnabled = false
+				w.channelFull.Store(true)
+				w.backlogCount.Add(1)
 				batch.Set(item.RelPath, model.CopyDiscovered, model.CksumNone)
 			}
 		} else {
+			w.backlogCount.Add(1)
 			batch.Set(item.RelPath, model.CopyDiscovered, model.CksumNone)
 		}
 
@@ -80,14 +107,6 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 			batchCount = 0
 		}
 
-		if w.fileLog != nil && w.logInterval > 0 && time.Since(lastProgressTime) >= w.logInterval {
-			w.fileLog.Emit("walk_progress", map[string]any{
-				"discoveredCount": walkCount,
-				"currentPath":     item.RelPath,
-			})
-			lastProgressTime = time.Now()
-		}
-
 		return nil
 	})
 
@@ -99,12 +118,10 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 	batch.Close()
 
 	if err != nil {
-		// Walk was cancelled or failed — do NOT write __walk_complete.
-		// Next resume will see no __walk_complete and start fresh.
 		return err
 	}
 
-	if err := w.store.SetWalkComplete(int64(walkCount)); err != nil {
+	if err := w.store.SetWalkComplete(w.discoveredCount.Load()); err != nil {
 		return err
 	}
 
@@ -113,8 +130,6 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 }
 
 // dispatchRemaining pushes discovered (not yet dispatched) items to discoverCh.
-// Called after walk is complete, so channel will drain without blocking.
-// Since DB only stores 2-byte status, we re-stat each path to rebuild full DiscoverItem.
 func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
@@ -136,12 +151,12 @@ func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 			continue
 		}
 		discoverCh <- item
+		w.dispatchedCount.Add(1)
+		w.backlogCount.Add(-1)
 	}
 }
 
 // ResumeFromDB restores discoverCh from DB for a completed walk.
-// Supports scenario D (cksum→copy): files with cksumStatus=pass are skipped,
-// files with cksumStatus=mismatch/error are re-copied.
 func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
@@ -168,22 +183,17 @@ func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 	w.walkDone.Store(true)
 }
 
-// shouldSkipForCopyResume determines if a file should be skipped during copy resume.
-// Skip if: copy done AND (cksum passed OR no checksum result).
-// Re-copy if: cksum mismatch/error, or copy not done.
 func shouldSkipForCopyResume(cs model.CopyStatus, cks model.CksumStatus) bool {
 	if cks == model.CksumPass {
-		return true // Verified by checksum — skip
+		return true
 	}
 	if cs == model.CopyDone && cks == model.CksumNone {
-		return true // Copy done, no checksum issues — skip
+		return true
 	}
-	return false // Needs copy or re-copy
+	return false
 }
 
 // ResumeFromDBForCksum pushes files needing checksum verification to cksumCh.
-// Only includes files with copyStatus=done and cksumStatus≠pass.
-// Files with copyStatus=error are skipped (not worth verifying).
 func (w *Walker) ResumeFromDBForCksum(cksumCh chan<- model.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
@@ -197,7 +207,6 @@ func (w *Walker) ResumeFromDBForCksum(cksumCh chan<- model.DiscoverItem) {
 			continue
 		}
 		cs, cks := it.Value()
-		// Only verify successfully copied files that haven't passed checksum
 		if cs != model.CopyDone {
 			continue
 		}
