@@ -26,6 +26,7 @@ type CksumJob struct {
 	discoverBuf int
 	resultBuf   int
 	resume      bool
+	skipByMtime bool
 	metrics     *copy.ThroughputMeter
 }
 
@@ -57,6 +58,7 @@ func WithCksumFileLog(fl copy.FileLogger, sec int) CksumJobOption {
 func WithCksumIOSize(size int) CksumJobOption                { return func(j *CksumJob) { j.ioSize = size } }
 func WithCksumTaskID(id string) CksumJobOption               { return func(j *CksumJob) { j.taskID = id } }
 func WithCksumResume(v bool) CksumJobOption                  { return func(j *CksumJob) { j.resume = v } }
+func WithCksumSkipByMtime(v bool) CksumJobOption            { return func(j *CksumJob) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption { return func(j *CksumJob) { j.cksumAlgo = algo } }
 
 // Run executes the checksum job and blocks until completion.
@@ -115,7 +117,7 @@ func (j *CksumJob) startCksumWorkers(cksumCh <-chan model.DiscoverItem, resultCh
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo)
+			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
 			w.Run(cksumCh, resultCh)
 		}(i)
 	}

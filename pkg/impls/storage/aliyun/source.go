@@ -155,6 +155,10 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		FileSize: result.ContentLength,
 	}
 
+	if result.ETag != nil {
+		item.ETag = strings.ToLower(strings.Trim(*result.ETag, `"`))
+	}
+
 	if result.Metadata != nil {
 		item.Mode = parseMode(result.Metadata[metaMode])
 		item.Uid = parseInt(result.Metadata[metaUID])
@@ -196,6 +200,7 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 		RelPath:  relPath,
 		FileType: model.FileRegular,
 		FileSize: size,
+		ETag:     strings.ToLower(strings.Trim(etag, `"`)),
 	}, nil
 }
 
@@ -270,6 +275,17 @@ func parseInt(s string) int {
 		return 0
 	}
 	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func parseInt64(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0
 	}

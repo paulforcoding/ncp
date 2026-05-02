@@ -2,6 +2,7 @@ package local
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -85,6 +86,48 @@ func (d *Destination) Symlink(relPath string, target string) error {
 // SetMetadata applies POSIX metadata to a file or directory.
 func (d *Destination) SetMetadata(relPath string, meta model.FileMetadata) error {
 	return setMetadata(d.base, relPath, meta)
+}
+
+// Restat returns metadata for an existing file on the destination (for skip-by-mtime).
+func (d *Destination) Restat(relPath string) (model.DiscoverItem, error) {
+	fullPath := filepath.Join(d.base, relPath)
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return model.DiscoverItem{}, err
+	}
+
+	mode := info.Mode()
+	var ft model.FileType
+	switch {
+	case info.IsDir():
+		ft = model.FileDir
+	case mode&fs.ModeSymlink != 0:
+		ft = model.FileSymlink
+	default:
+		ft = model.FileRegular
+	}
+
+	uid, gid := fileOwner(info)
+
+	item := model.DiscoverItem{
+		RelPath:  relPath,
+		FileType: ft,
+		FileSize: info.Size(),
+		Mode:     uint32(mode.Perm()),
+		Uid:      uid,
+		Gid:      gid,
+		Mtime:    info.ModTime().UnixNano(),
+	}
+
+	if ft == model.FileSymlink {
+		target, err := os.Readlink(fullPath)
+		if err != nil {
+			return model.DiscoverItem{}, fmt.Errorf("local restat readlink %s: %w", relPath, err)
+		}
+		item.LinkTarget = target
+	}
+
+	return item, nil
 }
 
 // Base returns the destination base directory.

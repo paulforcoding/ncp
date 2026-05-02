@@ -11,25 +11,27 @@ import (
 
 // Replicator copies files from a Source to a Destination.
 type Replicator struct {
-	id        int
-	src       storage.Source
-	dst       storage.Destination
-	fileLog   FileLogger
-	ioSize    int
-	cksumAlgo model.CksumAlgorithm
-	metrics   *ThroughputMeter
+	id          int
+	src         storage.Source
+	dst         storage.Destination
+	fileLog     FileLogger
+	ioSize      int
+	cksumAlgo   model.CksumAlgorithm
+	metrics     *ThroughputMeter
+	skipByMtime bool
 }
 
 // NewReplicator creates a Replicator with the given ID.
-func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter) *Replicator {
+func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter, skipByMtime bool) *Replicator {
 	return &Replicator{
-		id:        id,
-		src:       src,
-		dst:       dst,
-		fileLog:   fileLog,
-		ioSize:    ioSize,
-		cksumAlgo: cksumAlgo,
-		metrics:   metrics,
+		id:          id,
+		src:         src,
+		dst:         dst,
+		fileLog:     fileLog,
+		ioSize:      ioSize,
+		cksumAlgo:   cksumAlgo,
+		metrics:     metrics,
+		skipByMtime: skipByMtime,
 	}
 }
 
@@ -45,6 +47,19 @@ func (r *Replicator) Run(discoverCh <-chan model.DiscoverItem, resultCh chan<- m
 }
 
 func (r *Replicator) copyOne(item model.DiscoverItem) model.FileResult {
+	if r.skipByMtime {
+		if skipped, _ := ShouldSkipCopy(r.dst, item); skipped {
+			return model.FileResult{
+				RelPath:    item.RelPath,
+				FileType:   item.FileType,
+				FileSize:   item.FileSize,
+				CopyStatus: model.CopyDone,
+				Skipped:    true,
+				Algorithm:  string(r.cksumAlgo),
+			}
+		}
+	}
+
 	switch item.FileType {
 	case model.FileDir:
 		return r.copyDir(item)
@@ -200,15 +215,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 		}
 	}
 
-	if r.metrics != nil {
-		r.metrics.AddFile(item.FileSize)
-	}
-
 	checksumHex := fmt.Sprintf("%x", checksumBytes)
-
-	if r.metrics != nil {
-		r.metrics.AddFile(item.FileSize)
-	}
 
 	return model.FileResult{
 		RelPath:    item.RelPath,
