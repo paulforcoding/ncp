@@ -23,6 +23,7 @@ type Job struct {
 	fileLog        FileLogger
 	logInterval    int
 	ioSize         int
+	cksumAlgo      model.CksumAlgorithm
 	discoverBuf    int
 	resultBuf      int
 	ensureDirMtime bool
@@ -57,6 +58,7 @@ func WithTaskID(id string) JobOption              { return func(j *Job) { j.task
 func WithDstBase(base string) JobOption           { return func(j *Job) { j.dstBase = base } }
 func WithEnsureDirMtime(v bool) JobOption         { return func(j *Job) { j.ensureDirMtime = v } }
 func WithResume(v bool) JobOption                 { return func(j *Job) { j.resume = v } }
+func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
 func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 	return func(j *Job) { j.dstFactory = f }
 }
@@ -145,7 +147,7 @@ func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh ch
 					return
 				}
 			}
-			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize)
+			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo)
 			r.Run(discoverCh, resultCh)
 		}(i)
 	}

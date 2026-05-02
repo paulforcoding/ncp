@@ -79,6 +79,7 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 			Mode:       uint32(mode.Perm()),
 			Uid:        uid,
 			Gid:        gid,
+			Mtime:      info.ModTime().UnixNano(),
 		}
 
 		// Read symlink target at walk time so Replicator doesn't need Source access
@@ -151,6 +152,7 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		Mode:     uint32(mode.Perm()),
 		Uid:      uid,
 		Gid:      gid,
+		Mtime:    info.ModTime().UnixNano(),
 	}
 
 	if ft == model.FileSymlink {

@@ -1,7 +1,10 @@
+VERSION ?= 0.2.0
+LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+
 .PHONY: build test unit integration lint clean
 
 build:
-	go build -o ncp ./cmd/ncp
+	go build $(LDFLAGS) -o ncp ./cmd/ncp
 
 test: unit integration
 

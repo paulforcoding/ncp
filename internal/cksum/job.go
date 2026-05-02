@@ -23,6 +23,7 @@ type CksumJob struct {
 	fileLog     copy.FileLogger
 	logInterval int
 	ioSize      int
+	cksumAlgo   model.CksumAlgorithm
 	discoverBuf int
 	resultBuf   int
 	resume      bool
@@ -35,6 +36,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 		dst:         dst,
 		store:       store,
 		parallelism: 1,
+		cksumAlgo:   model.DefaultCksumAlgorithm,
 		discoverBuf: 100000,
 		resultBuf:   100000,
 	}
@@ -54,6 +56,7 @@ func WithCksumFileLog(fl copy.FileLogger, sec int) CksumJobOption {
 func WithCksumIOSize(size int) CksumJobOption                { return func(j *CksumJob) { j.ioSize = size } }
 func WithCksumTaskID(id string) CksumJobOption               { return func(j *CksumJob) { j.taskID = id } }
 func WithCksumResume(v bool) CksumJobOption                  { return func(j *CksumJob) { j.resume = v } }
+func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption { return func(j *CksumJob) { j.cksumAlgo = algo } }
 
 // Run executes the checksum job and blocks until completion.
 // Returns exit code: 0=all pass, 2=mismatch or error.
@@ -119,7 +122,7 @@ func (j *CksumJob) startCksumWorkers(cksumCh <-chan model.DiscoverItem, resultCh
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize)
+			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo)
 			w.Run(cksumCh, resultCh)
 		}(i)
 	}
