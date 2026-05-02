@@ -62,6 +62,10 @@ func main() {
 	copyCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 	copyCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	copyCmd.Flags().String("task", "", "Resume an existing task by taskID")
+	copyCmd.Flags().String("endpoint", "", "OSS endpoint (e.g. oss-cn-shenzhen.aliyuncs.com)")
+	copyCmd.Flags().String("region", "", "OSS region (e.g. cn-shenzhen)")
+	copyCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
+	copyCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
 
 	// Bind all flags to Viper
 	v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -75,6 +79,10 @@ func main() {
 	v.BindPFlag("IOSize", copyCmd.Flags().Lookup("IOSize"))
 	v.BindPFlag("EnsureDirMtime", copyCmd.Flags().Lookup("enable-EnsureDirMtime"))
 	v.BindPFlag("ProgressStorePath", copyCmd.Flags().Lookup("ProgressStorePath"))
+	v.BindPFlag("OSSEndpoint", copyCmd.Flags().Lookup("endpoint"))
+	v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
+	v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
+	v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -160,6 +168,11 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+		// Warn about permissive config files if OSS credentials are in use
+		if cfg.OSSAK != "" || cfg.OSSSK != "" {
+			config.CheckCredentialFilePermissions()
+		}
 
 	// --dry-run: print effective config as JSON and exit
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
@@ -491,7 +504,14 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 // setupCopyDeps creates Source, Destination, and opens the Pebble store.
 // For ncp:// destinations, returns a dstFactory via extraOpts instead of a shared dst.
 func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
-	src, err := di.NewSource(srcPath)
+	ossCfg := di.OSSConfig{
+		Endpoint: cfg.OSSEndpoint,
+		Region:   cfg.OSSRegion,
+		AK:       cfg.OSSAK,
+		SK:       cfg.OSSSK,
+	}
+
+	src, err := di.NewSourceWithOSS(srcPath, ossCfg)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
@@ -500,14 +520,20 @@ func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID str
 	var dst storage.Destination
 
 	u, _ := di.ParsePath(dstPath)
-	if u.Scheme == "ncp" {
-		// Remote: each replicator gets its own connection
+	switch u.Scheme {
+	case "ncp":
 		dstFactory := func(id int) (storage.Destination, error) {
 			return di.NewRemoteDestination(u.Host, u.Path)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
-	} else {
+	case "oss":
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewDestinationWithConfig(dstPath, di.DestConfig{}, ossCfg)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
+		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
+	default:
 		dstCfg := di.DestConfig{
 			DirectIO:    cfg.DirectIO,
 			SyncWrites:  cfg.SyncWrites,
