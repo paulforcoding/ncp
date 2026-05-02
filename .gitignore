@@ -20,3 +20,9 @@ Thumbs.db
 
 # Build
 dist/
+
+.aiinputs/
+.aireports/
+.claude/
+_bmad-output/
+_bmad/

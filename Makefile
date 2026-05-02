@@ -1,7 +1,7 @@
 .PHONY: build test unit integration lint clean
 
 build:
-	go build ./...
+	go build -o ncp ./cmd/ncp
 
 test: unit integration
 
