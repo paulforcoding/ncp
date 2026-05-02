@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/zp001/ncp/internal/config"
 	"github.com/zp001/ncp/internal/copy"
+	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/internal/protocol"
@@ -150,7 +151,29 @@ func main() {
 	serveCmd.Flags().Bool("enable-SyncWrites", true, "Enable fsync on write")
 	serveCmd.Flags().Bool("disable-SyncWrites", false, "Disable fsync on write")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd)
+	// cksum command
+	cksumCmd := &cobra.Command{
+		Use:   "cksum <src> <dst>",
+		Short: "Verify data consistency between source and destination",
+		Long:  "Verify source and destination data consistency by comparing MD5 checksums. Supports local↔local, local↔OSS, and OSS↔OSS.",
+		Args:  cobra.MaximumNArgs(2),
+		RunE:  runCksum,
+	}
+	cksumCmd.Flags().Int("CopyParallelism", 1, "Number of parallel checksum workers")
+	cksumCmd.Flags().String("ProgramLogLevel", "info", "Log level")
+	cksumCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output")
+	cksumCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
+	cksumCmd.Flags().Bool("disable-FileLog", false, "Disable FileLog output")
+	cksumCmd.Flags().String("FileLogOutput", "console", "FileLog output")
+	cksumCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
+	cksumCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
+	cksumCmd.Flags().String("endpoint", "", "OSS endpoint")
+	cksumCmd.Flags().String("region", "", "OSS region")
+	cksumCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
+	cksumCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
+
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -350,9 +373,29 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 	defer fl.Close()
 
+	var exitCode int
+	var runErr error
+
+	switch jobType {
+	case task.JobTypeCksum:
+		exitCode, runErr = runResumeCksum(cfg, meta, fl, taskID, progressDir, ctx)
+	default:
+		exitCode, runErr = runResumeCopy(cfg, meta, fl, taskID, progressDir, ctx)
+	}
+
+	task.UpdateRunFinished(meta, exitCode, progressDir)
+
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", runErr.Error(), taskID, exitCode)
+	}
+	os.Exit(exitCode)
+	return nil
+}
+
+func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
 	src, dst, store, extraOpts, err := setupCopyDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
-		return err
+		return 1, err
 	}
 	defer store.Close()
 
@@ -368,6 +411,98 @@ func runResume(cmd *cobra.Command, args []string) error {
 	jobOpts = append(jobOpts, extraOpts...)
 
 	job := copy.NewJob(src, dst, store, jobOpts...)
+	return job.Run(ctx)
+}
+
+func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
+	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	if err != nil {
+		return 1, err
+	}
+	defer store.Close()
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(cfg.CopyParallelism),
+		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
+		cksum.WithCksumIOSize(cfg.IOSize),
+		cksum.WithCksumTaskID(taskID),
+		cksum.WithCksumResume(true),
+	)
+	return job.Run(ctx)
+}
+
+// runCksum is the Composition Root for the cksum command.
+func runCksum(cmd *cobra.Command, args []string) error {
+	resolveBoolFlag(cmd, "FileLogEnabled", "enable-FileLog", "disable-FileLog")
+
+	// Bind cksum flags to Viper
+	v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
+	v.BindPFlag("ProgramLogLevel", cmd.Flags().Lookup("ProgramLogLevel"))
+	v.BindPFlag("ProgramLogOutput", cmd.Flags().Lookup("ProgramLogOutput"))
+	v.BindPFlag("FileLogEnabled", cmd.Flags().Lookup("enable-FileLog"))
+	v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
+	v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
+	v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
+	v.BindPFlag("OSSEndpoint", cmd.Flags().Lookup("endpoint"))
+	v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
+	v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
+	v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
+
+	cfg, err := config.LoadFromViper(v)
+	if err != nil {
+		return err
+	}
+
+	// --task flag: resume existing cksum task
+	taskID, _ := cmd.Flags().GetString("task")
+	if taskID != "" {
+		return runCksumResume(cmd, cfg, taskID)
+	}
+
+	// New cksum: require src and dst
+	if len(args) < 2 {
+		return fmt.Errorf("cksum requires <src> and <dst> arguments when not using --task")
+	}
+
+	srcPath := args[0]
+	dstPath := args[1]
+
+	taskID = task.GenerateTaskID()
+	progressDir := cfg.ProgressStorePath
+
+	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
+		return fmt.Errorf("setup program log: %w", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Write meta.json
+	meta := task.NewMeta(taskID, srcPath, dstPath, os.Args[1:], task.JobTypeCksum)
+	if err := task.WriteMetaTo(meta, progressDir); err != nil {
+		return fmt.Errorf("write meta: %w", err)
+	}
+
+	// Setup FileLog
+	fl, err := setupFileLog(cfg, taskID, progressDir)
+	if err != nil {
+		return err
+	}
+	defer fl.Close()
+
+	// Dependency injection
+	src, dst, store, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(cfg.CopyParallelism),
+		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
+		cksum.WithCksumIOSize(cfg.IOSize),
+		cksum.WithCksumTaskID(taskID),
+	)
 
 	exitCode, err := job.Run(ctx)
 
@@ -378,6 +513,95 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 	os.Exit(exitCode)
 	return nil
+}
+
+// runCksumResume handles `ncp cksum --task <taskID>`.
+func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error {
+	progressDir := cfg.ProgressStorePath
+
+	meta, lock, err := task.CheckTaskNotRunning(progressDir, taskID)
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
+	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
+		return fmt.Errorf("setup program log: %w", err)
+	}
+
+	if err := task.AppendRun(meta, task.JobTypeCksum, progressDir); err != nil {
+		return fmt.Errorf("append run: %w", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	fl, err := setupFileLog(cfg, taskID, progressDir)
+	if err != nil {
+		return err
+	}
+	defer fl.Close()
+
+	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(cfg.CopyParallelism),
+		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
+		cksum.WithCksumIOSize(cfg.IOSize),
+		cksum.WithCksumTaskID(taskID),
+		cksum.WithCksumResume(true),
+	)
+
+	exitCode, err := job.Run(ctx)
+
+	task.UpdateRunFinished(meta, exitCode, progressDir)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
+	}
+	os.Exit(exitCode)
+	return nil
+}
+
+// setupCksumDeps creates src Source, dst Source, and opens the Pebble store.
+// Both src and dst are Sources (readable) for checksum comparison.
+func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, error) {
+	ossCfg := di.OSSConfig{
+		Endpoint: cfg.OSSEndpoint,
+		Region:   cfg.OSSRegion,
+		AK:       cfg.OSSAK,
+		SK:       cfg.OSSSK,
+	}
+
+	src, err := di.NewSourceWithOSS(srcPath, ossCfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create source: %w", err)
+	}
+
+	// For cksum, dst must also be a Source (readable)
+	u, _ := di.ParsePath(dstPath)
+	if u.Scheme == "ncp" {
+		return nil, nil, nil, fmt.Errorf("ncp:// destinations do not support cksum (protocol has built-in MD5 verification)")
+	}
+
+	dst, err := di.NewSourceWithOSS(dstPath, ossCfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+	}
+
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open progress store: %w", err)
+	}
+
+	return src, dst, store, nil
 }
 
 // runServe handles `ncp serve` — starts the ncp protocol server.
