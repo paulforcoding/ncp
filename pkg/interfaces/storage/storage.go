@@ -47,3 +47,9 @@ type Destination interface {
 type TaskFinalizer interface {
 	Done() error
 }
+
+// Restatter is optionally implemented by Destination implementations
+// that support checking existing file metadata for skip-by-mtime optimization.
+type Restatter interface {
+	Restat(relPath string) (model.DiscoverItem, error)
+}

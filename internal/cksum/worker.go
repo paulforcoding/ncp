@@ -11,23 +11,25 @@ import (
 
 // CksumWorker compares source and destination files by computing checksums.
 type CksumWorker struct {
-	id        int
-	src       storage.Source
-	dst       storage.Source
-	fileLog   copy.FileLogger
-	ioSize    int
-	cksumAlgo model.CksumAlgorithm
+	id          int
+	src         storage.Source
+	dst         storage.Source
+	fileLog     copy.FileLogger
+	ioSize      int
+	cksumAlgo   model.CksumAlgorithm
+	skipByMtime bool
 }
 
 // NewCksumWorker creates a CksumWorker.
-func NewCksumWorker(id int, src, dst storage.Source, fileLog copy.FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm) *CksumWorker {
+func NewCksumWorker(id int, src, dst storage.Source, fileLog copy.FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, skipByMtime bool) *CksumWorker {
 	return &CksumWorker{
-		id:        id,
-		src:       src,
-		dst:       dst,
-		fileLog:   fileLog,
-		ioSize:    ioSize,
-		cksumAlgo: cksumAlgo,
+		id:          id,
+		src:         src,
+		dst:         dst,
+		fileLog:     fileLog,
+		ioSize:      ioSize,
+		cksumAlgo:   cksumAlgo,
+		skipByMtime: skipByMtime,
 	}
 }
 
@@ -40,6 +42,19 @@ func (w *CksumWorker) Run(cksumCh <-chan model.DiscoverItem, resultCh chan<- mod
 }
 
 func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
+	if w.skipByMtime {
+		if skipped, _ := ShouldSkipCksum(w.dst, item); skipped {
+			return model.FileResult{
+				RelPath:     item.RelPath,
+				FileType:    item.FileType,
+				FileSize:    item.FileSize,
+				CksumStatus: model.CksumPass,
+				Skipped:     true,
+				Algorithm:   string(w.cksumAlgo),
+			}
+		}
+	}
+
 	switch item.FileType {
 	case model.FileRegular:
 		return w.cksumFile(item)

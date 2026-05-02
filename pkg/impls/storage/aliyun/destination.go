@@ -181,6 +181,56 @@ func (d *Destination) key(relPath string) string {
 	return d.prefix + relPath
 }
 
+// Restat returns metadata for an existing object on the destination (for skip-by-mtime).
+func (d *Destination) Restat(relPath string) (model.DiscoverItem, error) {
+	key := d.key(relPath)
+
+	result, err := withRetryResult(context.Background(), d.retryCfg, func() (*oss.HeadObjectResult, error) {
+		return d.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+			Bucket: oss.Ptr(d.bucket),
+			Key:    oss.Ptr(key),
+		})
+	})
+	if err != nil {
+		return model.DiscoverItem{}, fmt.Errorf("aliyun restat %s: %w", relPath, err)
+	}
+
+	isDir := strings.HasSuffix(key, "/")
+	isSymlink := result.Metadata != nil && result.Metadata[metaSymlinkTarget] != ""
+
+	var ft model.FileType
+	switch {
+	case isDir:
+		ft = model.FileDir
+	case isSymlink:
+		ft = model.FileSymlink
+	default:
+		ft = model.FileRegular
+	}
+
+	item := model.DiscoverItem{
+		RelPath:  relPath,
+		FileType: ft,
+		FileSize: result.ContentLength,
+	}
+
+	if result.ETag != nil {
+		item.ETag = strings.ToLower(strings.Trim(*result.ETag, `"`))
+	}
+
+	if result.Metadata != nil {
+		item.Mode = parseMode(result.Metadata[metaMode])
+		item.Uid = parseInt(result.Metadata[metaUID])
+		item.Gid = parseInt(result.Metadata[metaGID])
+		if ft == model.FileSymlink {
+			item.LinkTarget = result.Metadata[metaSymlinkTarget]
+		}
+		item.Mtime = parseInt64(result.Metadata[metaMtime])
+	}
+
+	return item, nil
+}
+
 func posixMetadata(mode os.FileMode, uid, gid int) map[string]string {
 	return map[string]string{
 		metaMode: fmt.Sprintf("%04o", mode.Perm()),

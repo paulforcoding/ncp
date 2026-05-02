@@ -11,5 +11,6 @@ type FileResult struct {
 	Algorithm   string // "md5" or "xxh64"
 	SrcHash     string // cksum 时源端 hash（仅 cksum regular file）
 	DstHash     string // cksum 时目的端 hash（仅 cksum regular file）
+	Skipped     bool   // true if file was skipped by mtime/size/etag check
 	Err         error
 }

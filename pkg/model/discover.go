@@ -12,4 +12,5 @@ type DiscoverItem struct {
 	Gid        int      // Owner GID
 	Mtime      int64    // Modification time (unix nano) — set for regular files; directories use EnsureDirMtime
 	LinkTarget string   // Symlink target (only set when FileType == Symlink)
+	ETag       string   // OSS ETag (set during Walk, used for skip-by-mtime optimization)
 }

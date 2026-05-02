@@ -66,6 +66,9 @@ func (dw *CksumDBWriter) Run(resultCh <-chan model.FileResult) {
 			switch r.CksumStatus {
 			case model.CksumPass:
 				dw.pass++
+				if !r.Skipped && dw.metrics != nil {
+					dw.metrics.AddFile(r.FileSize)
+				}
 			case model.CksumMismatch:
 				dw.mismatch++
 			case model.CksumError:
@@ -161,6 +164,9 @@ func (dw *CksumDBWriter) emitFileComplete(r model.FileResult) {
 		"checksum":  r.Checksum,
 		"srcHash":   r.SrcHash,
 		"dstHash":   r.DstHash,
+	}
+	if r.Skipped {
+		data["skipped"] = true
 	}
 	dw.fileLog.Emit(filelog.EventFileComplete, data)
 }

@@ -24,11 +24,11 @@ type DBWriter struct {
 	metrics      *ThroughputMeter
 	logInterval  time.Duration
 
-	mu      sync.Mutex
-	batch   []model.FileResult
-	done    int64
-	failed  int64
-	total   int64
+	mu     sync.Mutex
+	batch  []model.FileResult
+	done   int64
+	failed int64
+	total  int64
 }
 
 // NewDBWriter creates a DBWriter.
@@ -63,6 +63,9 @@ func (dw *DBWriter) Run(resultCh <-chan model.FileResult) {
 			dw.total++
 			if r.CopyStatus == model.CopyDone {
 				dw.done++
+				if !r.Skipped && dw.metrics != nil {
+					dw.metrics.AddFile(r.FileSize)
+				}
 			} else if r.CopyStatus == model.CopyError {
 				dw.failed++
 			}
@@ -152,6 +155,9 @@ func (dw *DBWriter) emitFileComplete(r model.FileResult) {
 		"checksum":  r.Checksum,
 		"srcHash":   r.SrcHash,
 		"dstHash":   r.DstHash,
+	}
+	if r.Skipped {
+		data["skipped"] = true
 	}
 	dw.fileLog.Emit(filelog.EventFileComplete, data)
 }

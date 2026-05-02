@@ -24,6 +24,7 @@ type Config struct {
 	ProgressStorePath string             `json:"ProgressStorePath" mapstructure:"ProgressStorePath"`
 	ServerListenAddr  string             `json:"ServerListenAddr" mapstructure:"ServerListenAddr"`
 	CksumAlgorithm    string             `json:"CksumAlgorithm" mapstructure:"CksumAlgorithm"`
+	SkipByMtime       bool               `json:"SkipByMtime" mapstructure:"SkipByMtime"`
 
 	// OSS configuration
 	OSSEndpoint string `json:"OSSEndpoint,omitempty" mapstructure:"OSSEndpoint"`
@@ -52,6 +53,7 @@ func DefaultConfig() Config {
 		ProgressStorePath: "./progress",
 		ServerListenAddr:  ":9900",
 		CksumAlgorithm:    string(model.DefaultCksumAlgorithm),
+		SkipByMtime:       true,
 	}
 }
 

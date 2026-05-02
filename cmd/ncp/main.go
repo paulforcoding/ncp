@@ -13,9 +13,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/config"
 	"github.com/zp001/ncp/internal/copy"
-	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/internal/protocol"
@@ -69,7 +69,9 @@ func main() {
 	copyCmd.Flags().String("region", "", "OSS region (e.g. cn-shenzhen)")
 	copyCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
 	copyCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
-		copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
+	copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
+	copyCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
+	copyCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 
 	// Bind all flags to Viper
 	v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -87,7 +89,8 @@ func main() {
 	v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
 	v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
 	v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
-		v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
+	v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
+	v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -105,6 +108,8 @@ func main() {
 	resumeCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	resumeCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
 	resumeCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
+	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 
 	// task command group
 	taskCmd := &cobra.Command{
@@ -176,7 +181,9 @@ func main() {
 	cksumCmd.Flags().String("region", "", "OSS region")
 	cksumCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
 	cksumCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
-		cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
+	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
+	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
+	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
 	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd)
 
@@ -191,16 +198,17 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "DirectIO", "enable-DirectIO", "disable-DirectIO")
 	resolveBoolFlag(cmd, "SyncWrites", "enable-SyncWrites", "disable-SyncWrites")
 	resolveBoolFlag(cmd, "EnsureDirMtime", "enable-EnsureDirMtime", "disable-EnsureDirMtime")
+	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
 		return err
 	}
 
-		// Warn about permissive config files if OSS credentials are in use
-		if cfg.OSSAK != "" || cfg.OSSSK != "" {
-			config.CheckCredentialFilePermissions()
-		}
+	// Warn about permissive config files if OSS credentials are in use
+	if cfg.OSSAK != "" || cfg.OSSSK != "" {
+		config.CheckCredentialFilePermissions()
+	}
 
 	// --dry-run: print effective config as JSON and exit
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
@@ -262,6 +270,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		copy.WithDstBase(dstPath),
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
+		copy.WithSkipByMtime(cfg.SkipByMtime),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -326,6 +335,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
+		copy.WithSkipByMtime(cfg.SkipByMtime),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -344,6 +354,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 // runResume handles `ncp resume <taskID>` — determines jobType from last run.
 func runResume(cmd *cobra.Command, args []string) error {
+	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 	taskID := args[0]
 	progressDir, _ := cmd.Flags().GetString("ProgressStorePath")
 
@@ -417,6 +428,7 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
+		copy.WithSkipByMtime(cfg.SkipByMtime),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -438,6 +450,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumTaskID(taskID),
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
+		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 	)
 	return job.Run(ctx)
 }
@@ -458,7 +471,8 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
 	v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
 	v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
-		v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
+	v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
+	v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
 
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
@@ -515,6 +529,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 		cksum.WithCksumIOSize(cfg.IOSize),
 		cksum.WithCksumTaskID(taskID),
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
+		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 	)
 
 	exitCode, err := job.Run(ctx)
@@ -570,6 +585,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		cksum.WithCksumTaskID(taskID),
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
+		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 	)
 
 	exitCode, err := job.Run(ctx)
@@ -826,6 +842,7 @@ func loadResumeConfig(cmd *cobra.Command) (*config.Config, error) {
 	v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
 	v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
 	v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
+	v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
 
 	return config.LoadFromViper(v)
 }
