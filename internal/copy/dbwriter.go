@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zp001/ncp/internal/progress/pebble"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -16,7 +16,7 @@ const (
 // DBWriter consumes FileResults from resultCh and batches writes to Pebble.
 // It waits for walkComplete before writing to DB to avoid contention with Walker.
 type DBWriter struct {
-	store       *pebble.Store
+	store       progress.ProgressStore
 	walker      *Walker
 	fileLog     FileLogger
 	batchSize   int
@@ -30,7 +30,7 @@ type DBWriter struct {
 }
 
 // NewDBWriter creates a DBWriter.
-func NewDBWriter(store *pebble.Store, walker *Walker, fileLog FileLogger) *DBWriter {
+func NewDBWriter(store progress.ProgressStore, walker *Walker, fileLog FileLogger) *DBWriter {
 	return &DBWriter{
 		store:        store,
 		walker:       walker,

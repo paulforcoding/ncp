@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zp001/ncp/internal/progress/pebble"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -21,7 +21,7 @@ type Report struct {
 }
 
 // GenerateReport creates a completion report from DB and DBWriter stats.
-func GenerateReport(taskID string, store *pebble.Store, done, failed int64, exitCode int) (*Report, error) {
+func GenerateReport(taskID string, store progress.ProgressStore, done, failed int64, exitCode int) (*Report, error) {
 	r := &Report{
 		TaskID:      taskID,
 		TotalFiles:  done + failed,

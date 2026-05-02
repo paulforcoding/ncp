@@ -78,8 +78,6 @@ func TestWalkDFSOrder(t *testing.T) {
 	// filepath.Walk is DFS: parent before child
 	for i, p := range paths {
 		for _, q := range paths[i+1:] {
-			// If q is a child of p, that's fine.
-			// If q should come before p lexicographically and is not a child, that's a bug.
 			_ = p
 			_ = q
 		}

@@ -7,24 +7,23 @@ import (
 	"os"
 
 	"github.com/zp001/ncp/internal/protocol"
-	"github.com/zp001/ncp/internal/storage/local"
-	pkgstorage "github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
 // serveConnHandler handles all protocol messages on a single server connection.
 type serveConnHandler struct {
-	dst    *local.Destination
+	dst    storage.Destination
 	fdMap  map[uint32]*openFile
 	nextFD uint32
 }
 
 type openFile struct {
-	writer pkgstorage.Writer
+	writer storage.Writer
 	md5    hash.Hash
 }
 
-func newServeConnHandler(dst *local.Destination) *serveConnHandler {
+func newServeConnHandler(dst storage.Destination) *serveConnHandler {
 	return &serveConnHandler{
 		dst:   dst,
 		fdMap: make(map[uint32]*openFile),

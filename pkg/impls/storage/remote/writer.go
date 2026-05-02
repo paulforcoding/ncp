@@ -4,17 +4,17 @@ import (
 	"fmt"
 
 	"github.com/zp001/ncp/internal/protocol"
-	pkgstorage "github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 )
 
-// Writer implements pkgstorage.Writer for remote files via the ncp protocol.
+// Writer implements storage.Writer for remote files via the ncp protocol.
 type Writer struct {
 	conn   *protocol.Conn
 	fd     uint32
 	closed bool
 }
 
-var _ pkgstorage.Writer = (*Writer)(nil)
+var _ storage.Writer = (*Writer)(nil)
 
 // WriteAt sends MsgPwrite to the server and returns the number of bytes written.
 func (w *Writer) WriteAt(p []byte, offset int64) (int, error) {

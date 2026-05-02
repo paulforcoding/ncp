@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zp001/ncp/internal/progress/pebble"
-	"github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -17,7 +17,7 @@ type Job struct {
 	dst            storage.Destination
 	dstFactory     func(id int) (storage.Destination, error)
 	dstBase        string // for EnsureDirMtime
-	store          *pebble.Store
+	store          progress.ProgressStore
 	taskID         string
 	parallelism    int
 	fileLog        FileLogger
@@ -30,7 +30,7 @@ type Job struct {
 }
 
 // NewJob creates a copy Job.
-func NewJob(src storage.Source, dst storage.Destination, store *pebble.Store, opts ...JobOption) *Job {
+func NewJob(src storage.Source, dst storage.Destination, store progress.ProgressStore, opts ...JobOption) *Job {
 	j := &Job{
 		src:            src,
 		dst:            dst,

@@ -1,4 +1,4 @@
-package storage
+package di
 
 import (
 	"fmt"
@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zp001/ncp/internal/storage/local"
-	"github.com/zp001/ncp/internal/storage/remote"
+	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/impls/storage/remote"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
-	pkgstorage "github.com/zp001/ncp/pkg/storage"
 )
 
 // DestConfig holds IO configuration for destination creation.
@@ -21,7 +21,7 @@ type DestConfig struct {
 }
 
 // NewSource creates a Source based on the URL scheme of srcPath.
-func NewSource(srcPath string) (pkgstorage.Source, error) {
+func NewSource(srcPath string) (storage.Source, error) {
 	u, err := ParsePath(srcPath)
 	if err != nil {
 		return nil, err
@@ -35,12 +35,12 @@ func NewSource(srcPath string) (pkgstorage.Source, error) {
 }
 
 // NewDestination creates a Destination based on the URL scheme of dstPath.
-func NewDestination(dstPath string) (pkgstorage.Destination, error) {
+func NewDestination(dstPath string) (storage.Destination, error) {
 	return NewDestinationWithConfig(dstPath, DestConfig{})
 }
 
 // NewDestinationWithConfig creates a Destination with IO configuration.
-func NewDestinationWithConfig(dstPath string, cfg DestConfig) (pkgstorage.Destination, error) {
+func NewDestinationWithConfig(dstPath string, cfg DestConfig) (storage.Destination, error) {
 	u, err := ParsePath(dstPath)
 	if err != nil {
 		return nil, err
@@ -80,6 +80,6 @@ func ParsePath(p string) (*url.URL, error) {
 }
 
 // NewRemoteDestination creates a remote Destination for ncp:// URLs.
-func NewRemoteDestination(addr, basePath string) (pkgstorage.Destination, error) {
+func NewRemoteDestination(addr, basePath string) (storage.Destination, error) {
 	return remote.NewDestination(addr, basePath)
 }

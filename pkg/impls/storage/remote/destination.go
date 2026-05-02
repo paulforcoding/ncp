@@ -6,18 +6,18 @@ import (
 	"path/filepath"
 
 	"github.com/zp001/ncp/internal/protocol"
-	pkgstorage "github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
-// Destination implements pkgstorage.Destination for remote ncp servers.
+// Destination implements storage.Destination for remote ncp servers.
 // Each Destination owns a single TCP connection used for all operations.
 type Destination struct {
 	conn     *protocol.Conn
 	basePath string // destination base path on the remote server
 }
 
-var _ pkgstorage.Destination = (*Destination)(nil)
+var _ storage.Destination = (*Destination)(nil)
 
 // NewDestination dials the remote server and returns a Destination ready for use.
 func NewDestination(addr, basePath string) (*Destination, error) {
@@ -29,7 +29,7 @@ func NewDestination(addr, basePath string) (*Destination, error) {
 }
 
 // OpenFile sends MsgOpen and returns a Writer backed by the shared connection.
-func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (pkgstorage.Writer, error) {
+func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	fullPath := d.fullPath(relPath)
 	msg := &protocol.OpenMsg{
 		Path:  fullPath,

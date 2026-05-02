@@ -31,6 +31,18 @@ type ProgressStore interface {
 
 	// Close releases all resources.
 	Close() error
+
+	// SetWalkComplete writes the __walk_complete marker with total count.
+	SetWalkComplete(totalCount int64) error
+
+	// HasWalkComplete returns true if __walk_complete marker exists.
+	HasWalkComplete() (bool, error)
+
+	// Reopen closes the DB and reopens it (for resume-without-walk_complete case).
+	Reopen() error
+
+	// Destroy closes and removes the DB directory.
+	Destroy() error
 }
 
 // Batch accumulates writes and commits them atomically.

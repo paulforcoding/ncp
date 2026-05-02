@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
-	"github.com/zp001/ncp/internal/storage/local"
-	"github.com/zp001/ncp/internal/storage/remote"
+	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/impls/storage/remote"
 	"github.com/zp001/ncp/pkg/model"
-	"github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/testutil"
 )
 

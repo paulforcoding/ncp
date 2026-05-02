@@ -8,9 +8,9 @@ import (
 
 // WriterConfig controls IO behavior for local file writes.
 type WriterConfig struct {
-	DirectIO   bool
-	SyncWrites bool
-	IOSize     int // 0 = use tiered
+	DirectIO    bool
+	SyncWrites  bool
+	IOSize      int // 0 = use tiered
 	IOSizeTiers []model.IOSizeTier
 }
 
@@ -25,9 +25,9 @@ func DefaultWriterConfig() WriterConfig {
 // Writer wraps os.File and provides WriteAt (pwrite) semantics
 // with configurable DirectIO, SyncWrites, and IOSizeTiers.
 type Writer struct {
-	f     *os.File
-	cfg   WriterConfig
-	size  int64 // expected file size for IOSize tier resolution
+	f    *os.File
+	cfg  WriterConfig
+	size int64 // expected file size for IOSize tier resolution
 }
 
 // WriteAt writes len(p) bytes to the file starting at byte offset off.

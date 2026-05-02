@@ -14,14 +14,13 @@ import (
 	"github.com/spf13/viper"
 	"github.com/zp001/ncp/internal/config"
 	"github.com/zp001/ncp/internal/copy"
+	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
-	"github.com/zp001/ncp/internal/progress/pebble"
 	"github.com/zp001/ncp/internal/protocol"
-	"github.com/zp001/ncp/internal/storage/local"
-	storfactory "github.com/zp001/ncp/internal/storage"
 	"github.com/zp001/ncp/internal/task"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
-	pkgstorage "github.com/zp001/ncp/pkg/storage"
 )
 
 var v *viper.Viper
@@ -380,11 +379,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "SyncWrites", "enable-SyncWrites", "disable-SyncWrites")
 	syncWrites, _ := cmd.Flags().GetBool("SyncWrites")
 
-	wcfg := local.WriterConfig{
+	dst, err := di.NewDestinationWithConfig(baseDir, di.DestConfig{
 		SyncWrites:  syncWrites,
 		IOSizeTiers: model.DefaultIOSizeTiers(),
-	}
-	dst, err := local.NewDestinationWithConfig(baseDir, wcfg)
+	})
 	if err != nil {
 		return fmt.Errorf("create local destination: %w", err)
 	}
@@ -492,39 +490,39 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 
 // setupCopyDeps creates Source, Destination, and opens the Pebble store.
 // For ncp:// destinations, returns a dstFactory via extraOpts instead of a shared dst.
-func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (pkgstorage.Source, pkgstorage.Destination, *pebble.Store, []copy.JobOption, error) {
-	src, err := storfactory.NewSource(srcPath)
+func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
+	src, err := di.NewSource(srcPath)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
 
 	var extraOpts []copy.JobOption
-	var dst pkgstorage.Destination
+	var dst storage.Destination
 
-	u, _ := storfactory.ParsePath(dstPath)
+	u, _ := di.ParsePath(dstPath)
 	if u.Scheme == "ncp" {
 		// Remote: each replicator gets its own connection
-		dstFactory := func(id int) (pkgstorage.Destination, error) {
-			return storfactory.NewRemoteDestination(u.Host, u.Path)
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewRemoteDestination(u.Host, u.Path)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
 	} else {
-		dstCfg := storfactory.DestConfig{
+		dstCfg := di.DestConfig{
 			DirectIO:    cfg.DirectIO,
 			SyncWrites:  cfg.SyncWrites,
 			IOSize:      cfg.IOSize,
 			IOSizeTiers: cfg.IOSizeTiers,
 		}
-		dst, err = storfactory.NewDestinationWithConfig(dstPath, dstCfg)
+		dst, err = di.NewDestinationWithConfig(dstPath, dstCfg)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
 		}
 	}
 
 	dbDir := filepath.Join(progressDir, taskID, "db")
-	store := &pebble.Store{}
-	if err := store.Open(dbDir); err != nil {
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
 	}
 

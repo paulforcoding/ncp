@@ -5,8 +5,8 @@ import (
 	"time"
 	"sync/atomic"
 
-	"github.com/zp001/ncp/internal/progress/pebble"
-	"github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -16,7 +16,7 @@ const batchThreshold = 1000
 // and pushes discovered items to discoverCh.
 type Walker struct {
 	src         storage.Source
-	store       *pebble.Store
+	store       progress.ProgressStore
 	walkDone    atomic.Bool
 	fileLog     FileLogger
 	logInterval time.Duration
@@ -28,7 +28,7 @@ type FileLogger interface {
 }
 
 // NewWalker creates a Walker.
-func NewWalker(src storage.Source, store *pebble.Store, fileLog FileLogger, logInterval time.Duration) *Walker {
+func NewWalker(src storage.Source, store progress.ProgressStore, fileLog FileLogger, logInterval time.Duration) *Walker {
 	return &Walker{
 		src:         src,
 		store:       store,

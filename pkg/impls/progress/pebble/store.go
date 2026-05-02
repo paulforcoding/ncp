@@ -6,7 +6,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 
-	"github.com/zp001/ncp/internal/progress"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -17,6 +17,8 @@ type Store struct {
 	db  *pebble.DB
 	dir string
 }
+
+var _ progress.ProgressStore = (*Store)(nil)
 
 // Open creates or opens a Pebble DB at dir.
 func (s *Store) Open(dir string) error {
@@ -91,8 +93,6 @@ func (s *Store) Close() error {
 }
 
 // SetWalkComplete writes the __walk_complete marker with total count.
-// Since the DB runs with DisableWAL=true, we flush memtables to ensure
-// durability instead of using pebble.Sync (which requires a WAL).
 func (s *Store) SetWalkComplete(totalCount int64) error {
 	key := []byte(walkCompleteKey)
 	val := []byte(fmt.Sprintf("%d", totalCount))

@@ -4,8 +4,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zp001/ncp/internal/progress/pebble"
-	"github.com/zp001/ncp/pkg/storage"
+	"github.com/zp001/ncp/pkg/interfaces/progress"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -13,7 +13,7 @@ import (
 // DB does not store fileType, so we stat the source to identify directories.
 // Iterates DB in reverse order (deep→shallow) because writing files into
 // a directory updates its mtime — must set parent dirs after children.
-func EnsureDirMtime(store *pebble.Store, src storage.Source, dstBase string) error {
+func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase string) error {
 	it, err := store.Iter()
 	if err != nil {
 		return err
