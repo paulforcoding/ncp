@@ -24,6 +24,12 @@ type Config struct {
 	ProgressStorePath string             `json:"ProgressStorePath" mapstructure:"ProgressStorePath"`
 	ServerListenAddr  string             `json:"ServerListenAddr" mapstructure:"ServerListenAddr"`
 
+	// OSS configuration
+	OSSEndpoint string `json:"OSSEndpoint,omitempty" mapstructure:"OSSEndpoint"`
+	OSSRegion   string `json:"OSSRegion,omitempty" mapstructure:"OSSRegion"`
+	OSSAK       string `json:"-" mapstructure:"OSSAK"`
+	OSSSK       string `json:"-" mapstructure:"OSSSK"`
+
 	DryRun bool `json:"-" mapstructure:"-"`
 	TaskID string `json:"-" mapstructure:"-"`
 }
