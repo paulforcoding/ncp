@@ -9,6 +9,10 @@ const (
 	EventFileError      = "file_error"
 	EventProgressSummary = "progress_summary"
 	EventCopyComplete   = "copy_complete"
+	EventCksumPass      = "cksum_pass"
+	EventCksumMismatch  = "cksum_mismatch"
+	EventCksumError     = "cksum_error"
+	EventCksumComplete  = "cksum_complete"
 )
 
 // ProgressSummaryData is the payload for progress_summary events.

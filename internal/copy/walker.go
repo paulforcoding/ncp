@@ -140,6 +140,8 @@ func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 }
 
 // ResumeFromDB restores discoverCh from DB for a completed walk.
+// Supports scenario D (cksum→copy): files with cksumStatus=pass are skipped,
+// files with cksumStatus=mismatch/error are re-copied.
 func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
@@ -152,8 +154,8 @@ func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 		if isInternalKey(key) {
 			continue
 		}
-		cs, _ := it.Value()
-		if cs == model.CopyDone {
+		cs, cks := it.Value()
+		if shouldSkipForCopyResume(cs, cks) {
 			continue
 		}
 		item, err := w.src.Restat(key)
@@ -163,6 +165,52 @@ func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 		discoverCh <- item
 	}
 	close(discoverCh)
+	w.walkDone.Store(true)
+}
+
+// shouldSkipForCopyResume determines if a file should be skipped during copy resume.
+// Skip if: copy done AND (cksum passed OR no checksum result).
+// Re-copy if: cksum mismatch/error, or copy not done.
+func shouldSkipForCopyResume(cs model.CopyStatus, cks model.CksumStatus) bool {
+	if cks == model.CksumPass {
+		return true // Verified by checksum — skip
+	}
+	if cs == model.CopyDone && cks == model.CksumNone {
+		return true // Copy done, no checksum issues — skip
+	}
+	return false // Needs copy or re-copy
+}
+
+// ResumeFromDBForCksum pushes files needing checksum verification to cksumCh.
+// Only includes files with copyStatus=done and cksumStatus≠pass.
+// Files with copyStatus=error are skipped (not worth verifying).
+func (w *Walker) ResumeFromDBForCksum(cksumCh chan<- model.DiscoverItem) {
+	it, err := w.store.Iter()
+	if err != nil {
+		return
+	}
+	defer it.Close()
+
+	for it.First(); it.Valid(); it.Next() {
+		key := it.Key()
+		if isInternalKey(key) {
+			continue
+		}
+		cs, cks := it.Value()
+		// Only verify successfully copied files that haven't passed checksum
+		if cs != model.CopyDone {
+			continue
+		}
+		if cks == model.CksumPass {
+			continue
+		}
+		item, err := w.src.Restat(key)
+		if err != nil {
+			continue
+		}
+		cksumCh <- item
+	}
+	close(cksumCh)
 	w.walkDone.Store(true)
 }
 
