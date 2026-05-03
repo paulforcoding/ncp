@@ -177,6 +177,13 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 			item.LinkTarget = result.Metadata[metaSymlinkTarget]
 		}
 	}
+	if item.Mode == 0 {
+		if isDir {
+			item.Mode = 0o755
+		} else {
+			item.Mode = 0o644
+		}
+	}
 
 	return item, nil
 }
@@ -207,6 +214,9 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 			item.Gid = parseInt(result.Metadata[metaGID])
 			item.Mtime = parseInt64(result.Metadata[metaMtime])
 		}
+		if item.Mode == 0 {
+			item.Mode = 0o755
+		}
 
 		return item, nil
 	}
@@ -232,6 +242,9 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 			item.FileType = model.FileSymlink
 			item.LinkTarget = result.Metadata[metaSymlinkTarget]
 		}
+	}
+	if item.Mode == 0 {
+		item.Mode = 0o644
 	}
 
 	return item, nil
