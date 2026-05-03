@@ -43,6 +43,8 @@ func NewSourceWithOSS(srcPath string, ossCfg OSSConfig) (storage.Source, error) 
 	switch u.Scheme {
 	case "", "file":
 		return local.NewSource(u.Path)
+	case "ncp":
+		return remote.NewSource(u.Host, u.Path)
 	case "oss":
 		return newOSSSource(u, ossCfg)
 	default:
