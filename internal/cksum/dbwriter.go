@@ -86,7 +86,7 @@ func (dw *CksumDBWriter) Run(resultCh <-chan model.FileResult) {
 			}
 			// Emit progress_summary
 			if dw.fileLog != nil && dw.logInterval > 0 && time.Since(lastProgressTime) >= dw.logInterval {
-				dw.emitProgressSummary(false, 0)
+				dw.emitProgressSummaryLocked(false, 0)
 				lastProgressTime = time.Now()
 			}
 			dw.mu.Unlock()
@@ -171,7 +171,17 @@ func (dw *CksumDBWriter) emitFileComplete(r model.FileResult) {
 	dw.fileLog.Emit(filelog.EventFileComplete, data)
 }
 
-func (dw *CksumDBWriter) emitProgressSummary(finished bool, exitCode int) {
+// EmitFinalSummary emits a finished progress_summary event. It acquires the
+// lock itself, so callers must NOT hold dw.mu.
+func (dw *CksumDBWriter) EmitFinalSummary(exitCode int) {
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+	dw.emitProgressSummaryLocked(true, exitCode)
+}
+
+// emitProgressSummaryLocked emits a progress_summary event.
+// Caller must hold dw.mu.
+func (dw *CksumDBWriter) emitProgressSummaryLocked(finished bool, exitCode int) {
 	walkerStats := dw.walker.Stats()
 
 	var filesPerSec, bytesPerSec float64
@@ -199,7 +209,7 @@ func (dw *CksumDBWriter) emitProgressSummary(finished bool, exitCode int) {
 			"bytesPerSec": bytesPerSec,
 		},
 		"dbWriter": map[string]any{
-			"pendingCount":   dw.PendingCount(),
+			"pendingCount":   len(dw.batch),
 			"totalDone":      dw.pass,
 			"totalFailed":    dw.mismatch + dw.failed,
 			"totalProcessed": dw.total,

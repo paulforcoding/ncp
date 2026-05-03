@@ -188,6 +188,7 @@ func main() {
 	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd)
 
 	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -254,6 +255,11 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer fl.Close()
+
+	// Validate cksum algorithm for destination
+	if err := validateCksumAlgoForOSS(resolveCksumAlgo(cfg), dstPath); err != nil {
+		return err
+	}
 
 	// Dependency injection
 	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, dstPath, progressDir, taskID)
@@ -492,6 +498,11 @@ func runCksum(cmd *cobra.Command, args []string) error {
 
 	srcPath := args[0]
 	dstPath := args[1]
+
+	// Validate cksum algorithm for OSS
+	if err := validateCksumAlgoForOSS(resolveCksumAlgo(cfg), srcPath, dstPath); err != nil {
+		return err
+	}
 
 	taskID = task.GenerateTaskID()
 	progressDir := cfg.ProgressStorePath
@@ -864,4 +875,16 @@ func resolveCksumAlgo(cfg *config.Config) model.CksumAlgorithm {
 		return model.DefaultCksumAlgorithm
 	}
 	return algo
+}
+
+// validateCksumAlgoForOSS checks that the chosen checksum algorithm is
+// compatible when object storage is involved. OSS uses Content-MD5
+// for integrity verification and only supports md5.
+func validateCksumAlgoForOSS(algo model.CksumAlgorithm, urls ...string) error {
+	for _, u := range urls {
+		if strings.HasPrefix(u, "oss://") && algo != model.CksumMD5 {
+			return fmt.Errorf("cksum-algorithm %q is not supported for OSS; only md5 is supported", algo)
+		}
+	}
+	return nil
 }
