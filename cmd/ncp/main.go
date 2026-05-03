@@ -785,6 +785,15 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 	var src storage.Source
 	var err error
 
+	if len(srcPaths) > 1 {
+		for _, sp := range srcPaths {
+			u, _ := di.ParsePath(sp)
+			if u.Scheme != "" && u.Scheme != "file" {
+				return nil, nil, nil, nil, fmt.Errorf("multi-source is only supported for local paths; %q has scheme %q", sp, u.Scheme)
+			}
+		}
+	}
+
 	if len(srcPaths) == 1 {
 		src, err = di.NewSourceWithOSS(srcPaths[0], ossCfg)
 		if err != nil {
