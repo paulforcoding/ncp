@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,16 +131,42 @@ func newOSSDestination(t *testing.T, env ossEnv, prefix string) *aliyun.Destinat
 }
 
 // seedOSSPrefix uploads a map of relative paths to content under the given prefix.
+// Also creates directory marker objects and POSIX metadata for cksum/copy tests.
 func seedOSSPrefix(t *testing.T, env ossEnv, prefix string, files map[string]string) {
 	t.Helper()
 	client := newOSSClient(env)
 	ctx := context.Background()
+
+	// Track created dirs to avoid duplicate PutObject calls
+	createdDirs := make(map[string]bool)
+
 	for relPath, content := range files {
 		key := prefix + relPath
+
+		// Create parent directory markers
+		dir := filepath.Dir(relPath)
+		for dir != "." && dir != "/" {
+			dirKey := prefix + dir + "/"
+			if !createdDirs[dirKey] {
+				createdDirs[dirKey] = true
+				_, err := client.PutObject(ctx, &oss.PutObjectRequest{
+					Bucket:   oss.Ptr(env.Bucket),
+					Key:      oss.Ptr(dirKey),
+					Body:     strings.NewReader(""),
+					Metadata: map[string]string{"ncp-mode": "0755"},
+				})
+				if err != nil {
+					t.Fatalf("PutObject dir marker %s: %v", dirKey, err)
+				}
+			}
+			dir = filepath.Dir(dir)
+		}
+
 		_, err := client.PutObject(ctx, &oss.PutObjectRequest{
-			Bucket: oss.Ptr(env.Bucket),
-			Key:    oss.Ptr(key),
-			Body:   strings.NewReader(content),
+			Bucket:   oss.Ptr(env.Bucket),
+			Key:      oss.Ptr(key),
+			Body:     strings.NewReader(content),
+			Metadata: map[string]string{"ncp-mode": "0644"},
 		})
 		if err != nil {
 			t.Fatalf("PutObject %s: %v", key, err)
@@ -178,9 +205,10 @@ func putOSSObject(t *testing.T, env ossEnv, prefix, relPath, content string) {
 	client := newOSSClient(env)
 	key := prefix + relPath
 	_, err := client.PutObject(context.Background(), &oss.PutObjectRequest{
-		Bucket: oss.Ptr(env.Bucket),
-		Key:    oss.Ptr(key),
-		Body:   strings.NewReader(content),
+		Bucket:   oss.Ptr(env.Bucket),
+		Key:      oss.Ptr(key),
+		Body:     strings.NewReader(content),
+		Metadata: map[string]string{"ncp-mode": "0644"},
 	})
 	if err != nil {
 		t.Fatalf("PutObject %s: %v", key, err)
