@@ -37,7 +37,6 @@ ncp uses URL-style path prefixes to select the storage backend:
 
 **Constraints:**
 - `ncp://` is destination-only (remote server receives pushes).
-- `ncp cksum` does not support `ncp://` destinations — the protocol has built-in MD5 verification.
 - `oss://` paths require additional OSS parameters (`--endpoint`, `--region`, `--access-key-id`, `--access-key-secret`).
 
 ### Multi-Source Copy
