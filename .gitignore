@@ -21,6 +21,14 @@ Thumbs.db
 # Build
 dist/
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Integration test
+.integrated_test/
+
 .aiinputs/
 .aireports/
 .claude/
