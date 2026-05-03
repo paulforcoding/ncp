@@ -1,6 +1,6 @@
 # ncp
 
-Agent-First file copy tool for massive-scale data migration.
+Agent-First file copy tool for massive-scale data migration with DB-backed resume.
 
 ncp copies files to remote servers and cloud object storage with DB-backed progress tracking, structured Agent-First output, and precise resume capabilities.
 
@@ -8,12 +8,15 @@ ncp copies files to remote servers and cloud object storage with DB-backed progr
 
 - **Massive-scale copy** — Tested with 10M+ files. Pipeline architecture (Walker → Replicator → DBWriter) keeps memory flat.
 - **DB-backed progress** — Every file's copy/checksum status is persisted to PebbleDB. Interrupt at any time; resume picks up exactly where you left off.
-- **Agent-First output** — Structured JSON FileLog events (`copy_plan`, `copy_progress`, `copy_complete`, `cksum_complete`) designed for programmatic consumption.
+- **High performance** — DB-tracked resume with minimal overhead; batched writes and delayed flush to avoid impacting copy throughput.
+- **Unique workflow** — Supports both copy-then-verify and verify-then-incremental-copy patterns, enabling efficient data synchronization.
+- **Agent-First output** — Structured NDJSON FileLog events (`copy_plan`, `file_complete`, `progress_summary`) designed for programmatic consumption by agents and scripts.
 - **Multiple backends** — Local filesystem, remote ncp server (`ncp://`), Alibaba Cloud OSS (`oss://`).
-- **Multi-source copy** — `ncp copy src1 src2 dst/` copies each source into its own subdirectory under dst.
 - **Checksum verification** — Independent `ncp cksum` command with MD5 or xxHash algorithms. Supports copy→cksum→copy cycles.
-- **File mtime preservation** — Regular file modification times are preserved during copy; directory mtimes are restored after copy completes.
-- **Protocol integrity** — Remote protocol (ncp://) uses CRC32 checksums on every frame to detect data corruption in transit.
+
+## Notes
+- Only regular files, directories, and symbolic links are supported. Pipes, sockets, device files, and other special file types are skipped.
+- Supported metadata: mode, owner (uid/gid), mtime, xattr. ACLs and other special attributes are not supported.
 
 ## Install
 
@@ -68,9 +71,9 @@ Copy files from one or more sources to a destination. Supports local, `ncp://`, 
 | `--enable-SyncWrites` | true | Enable fsync on write |
 | `--enable-EnsureDirMtime` | true | Restore directory mtime after copy |
 | `--enable-FileLog` | true | Enable structured FileLog output |
-| `--FileLogOutput` | console | FileLog output: console or file path |
-| `--FileLogInterval` | 5 | FileLog output interval in seconds |
-| `--ProgressStorePath` | ./progress | Progress storage directory |
+| `--FileLogOutput` | /tmp/ncp_file_log.json | FileLog output: console or file path |
+| `--FileLogInterval` | 5 | FileLog progress_summary interval in seconds |
+| `--ProgressStorePath` | /tmp/ncp_progress_store | Progress storage directory |
 | `--ProgramLogLevel` | info | Log level: trace/debug/info/warn/error/critical |
 | `--dry-run` | false | Print effective config and exit |
 | `--task` | | Resume existing task by taskID |
@@ -119,15 +122,185 @@ Walker(1) ──discoverCh──→ Replicator(N) ──resultCh──→ DBWrit
 
 Progress is stored as 2-byte values `[CopyStatus][CksumStatus]` keyed by relative path, with a `__walk_complete` sentinel for resume decisions.
 
-## Copy-Check-Retry Workflow
+## Usage Scenarios
 
-```
-1. ncp copy /src /dst              # Copy all files
-2. ncp cksum --task <taskID>       # Verify copied files
-3. ncp copy --task <taskID>        # Re-copy only mismatched files
+### Scenario 1: Copy first, then verify (ensure copy correctness)
+
+Use when you have a completed copy and want to verify data integrity.
+
+```bash
+# 1. Copy files
+ncp copy /data/project /backup/project
+# Output contains taskId, e.g. task-20260502-143000-abcd
+
+# 2. Verify copied files
+ncp cksum --task task-20260502-143000-abcd
+
+# 3. If mismatches found, re-copy only the failed files
+ncp copy --task task-20260502-143000-abcd
+
+# Or use resume to auto-detect the last job type
+ncp resume task-20260502-143000-abcd
 ```
 
-Step 3 only re-copies files where `cksumStatus != pass`, because `ResumeFromDB` skips files with `CksumPass` or `CopyDone+CksumNone`.
+Step 3 only re-copies files where `cksumStatus != pass`. `ResumeFromDB` skips files with `CksumPass` or `CopyDone+CksumNone`.
+
+### Scenario 2: Verify first, then incremental copy (sync based on existing data)
+
+Use when the destination already has partial data — verify first to find differences, then copy only what's needed.
+
+```bash
+# 1. Check differences between source and destination
+ncp cksum /data/project /backup/project
+# Output contains taskId, e.g. task-20260502-150000-ef01
+
+# 2. Based on verification results, copy only mismatched files
+ncp copy --task task-20260502-150000-ef01
+# copy skips files with cksumStatus=pass, only copies mismatch/error/none files
+```
+
+This pattern is ideal for incremental sync: use cksum to quickly locate divergent files, then use copy to precisely fill the gaps — avoiding a full redundant copy.
+
+## FileLog
+
+FileLog is ncp's structured event stream — every file operation emits a JSON line, making it easy for agents and scripts to track progress in real time.
+
+### Event Format
+
+All events are NDJSON (one JSON object per line). Every event contains:
+
+```json
+{"timestamp": "2026-05-03T14:30:00.123456789Z", "event": "<type>", "taskId": "task-20260502-143000-abcd", ...}
+```
+
+### Event Types
+
+#### `copy_plan` — emitted once at job start
+
+```json
+{
+  "timestamp": "2026-05-03T14:30:00.123456789Z",
+  "event": "copy_plan",
+  "taskId": "task-20260502-143000-abcd",
+  "sources": ["/data/project"],
+  "dest": "/backup/project",
+  "algorithm": "md5"
+}
+```
+
+#### `file_complete` — emitted per file after batch flush
+
+Copy mode:
+
+```json
+{
+  "timestamp": "2026-05-03T14:30:01.234567890Z",
+  "event": "file_complete",
+  "taskId": "task-20260502-143000-abcd",
+  "action": "copy",
+  "result": "done",
+  "errorCode": "",
+  "relPath": "src/main.go",
+  "fileType": "regular",
+  "fileSize": 4096,
+  "algorithm": "md5",
+  "checksum": "d41d8cd98f00b204e9800998ecf8427e"
+}
+```
+
+- `result`: `"done"` or `"error"`. When `"error"`, `errorCode` contains the error message.
+- `skipped`: present and `true` when the file was skipped by mtime/size/ETag match (only if `--skip-by-mtime` is enabled, which is the default).
+
+Checksum mode:
+
+```json
+{
+  "timestamp": "2026-05-03T14:35:00.345678901Z",
+  "event": "file_complete",
+  "taskId": "task-20260502-150000-ef01",
+  "action": "cksum",
+  "result": "done",
+  "errorCode": "",
+  "relPath": "src/main.go",
+  "fileType": "regular",
+  "fileSize": 4096,
+  "algorithm": "md5",
+  "checksum": "",
+  "srcHash": "d41d8cd98f00b204e9800998ecf8427e",
+  "dstHash": "d41d8cd98f00b204e9800998ecf8427e"
+}
+```
+
+- `result`: `"done"` (pass) or `"error"` (mismatch/error). `srcHash` and `dstHash` are populated for regular files.
+
+#### `progress_summary` — emitted periodically (controlled by `--FileLogInterval`)
+
+```json
+{
+  "timestamp": "2026-05-03T14:30:05.456789012Z",
+  "event": "progress_summary",
+  "taskId": "task-20260502-143000-abcd",
+  "phase": "copy",
+  "finished": false,
+  "exitCode": 0,
+  "walker": {
+    "walkComplete": true,
+    "discoveredCount": 1000000,
+    "dispatchedCount": 500000,
+    "backlogCount": 500000,
+    "channelFull": false
+  },
+  "replicator": {
+    "filesCopied": 480000,
+    "bytesCopied": 107374182400,
+    "filesPerSec": 3200.5,
+    "bytesPerSec": 715827882.7
+  },
+  "dbWriter": {
+    "pendingCount": 50,
+    "totalDone": 480000,
+    "totalFailed": 3,
+    "totalProcessed": 480003
+  }
+}
+```
+
+- `phase`: `"copy"` or `"cksum"`.
+- `finished`: `true` on the final summary when the job completes.
+- `exitCode`: only meaningful when `finished=true`. `0` = all pass, `2` = errors/mismatches.
+
+### Using FileLog
+
+**For agents** — tail the FileLog file and react to events:
+
+```bash
+# Watch for mismatches in real time
+tail -f /tmp/ncp_file_log.json | jq 'select(.event=="file_complete" and .result=="error")'
+
+# Track progress
+tail -f /tmp/ncp_file_log.json | jq 'select(.event=="progress_summary") | {phase, filesCopied: .replicator.filesCopied, bytesPerSec: .replicator.bytesPerSec}'
+
+# Detect job completion
+tail -f /tmp/ncp_file_log.json | jq 'select(.event=="progress_summary" and .finished==true)'
+```
+
+**For humans** — pipe through `jq` for readable output:
+
+```bash
+# Show each completed file
+cat /tmp/ncp_file_log.json | jq -c '{event, relPath: .relPath, result: .result}'
+
+# Show only errors
+cat /tmp/ncp_file_log.json | jq 'select(.result=="error")'
+```
+
+**Configuration**:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-FileLog` | true | Enable/disable FileLog |
+| `--FileLogOutput` | /tmp/ncp_file_log.json | Output destination: `console` for stdout, or a file path |
+| `--FileLogInterval` | 5 | Seconds between `progress_summary` events |
 
 ## Development
 
@@ -141,4 +314,4 @@ make lint           # Run golangci-lint
 
 ## License
 
-MIT
+GNU General Public License v3.0
