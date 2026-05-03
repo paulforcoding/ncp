@@ -132,7 +132,17 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		Key:    oss.Ptr(key),
 	})
 	if err != nil {
-		return model.DiscoverItem{}, fmt.Errorf("aliyun restat %s: %w", relPath, err)
+		// Directory marker objects in OSS have a trailing "/" in the key.
+		// If the direct lookup fails, try with "/" appended.
+		dirKey := key + "/"
+		result, err = s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+			Bucket: oss.Ptr(s.bucket),
+			Key:    oss.Ptr(dirKey),
+		})
+		if err != nil {
+			return model.DiscoverItem{}, fmt.Errorf("aliyun restat %s: %w", relPath, err)
+		}
+		key = dirKey
 	}
 
 	isDir := strings.HasSuffix(key, "/")
@@ -179,29 +189,52 @@ func (s *Source) Base() string {
 func (s *Source) objectToItem(key, relPath string, size int64, etag string) (model.DiscoverItem, error) {
 	isDir := strings.HasSuffix(key, "/")
 
-	// For directories, we don't need a HeadObject call — we have enough info
 	if isDir {
-		return model.DiscoverItem{
+		item := model.DiscoverItem{
 			SrcBase:  "oss://" + s.bucket + "/" + s.prefix,
 			RelPath:  strings.TrimSuffix(relPath, "/"),
 			FileType: model.FileDir,
 			FileSize: 0,
-		}, nil
+		}
+
+		result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+			Bucket: oss.Ptr(s.bucket),
+			Key:    oss.Ptr(key),
+		})
+		if err == nil && result.Metadata != nil {
+			item.Mode = parseMode(result.Metadata[metaMode])
+			item.Uid = parseInt(result.Metadata[metaUID])
+			item.Gid = parseInt(result.Metadata[metaGID])
+			item.Mtime = parseInt64(result.Metadata[metaMtime])
+		}
+
+		return item, nil
 	}
 
-	// For files and symlinks, we need metadata from HeadObject
-	// But to avoid N HeadObject calls during Walk, we defer detection
-	// Symlinks are identified by the presence of ncp-symlink-target metadata
-	// We'll treat all non-directory objects as regular files during Walk
-	// and let Open/Restat handle symlink detection when needed
-
-	return model.DiscoverItem{
+	item := model.DiscoverItem{
 		SrcBase:  "oss://" + s.bucket + "/" + s.prefix,
 		RelPath:  relPath,
 		FileType: model.FileRegular,
 		FileSize: size,
 		ETag:     strings.ToLower(strings.Trim(etag, `"`)),
-	}, nil
+	}
+
+	result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(s.bucket),
+		Key:    oss.Ptr(key),
+	})
+	if err == nil && result.Metadata != nil {
+		item.Mode = parseMode(result.Metadata[metaMode])
+		item.Uid = parseInt(result.Metadata[metaUID])
+		item.Gid = parseInt(result.Metadata[metaGID])
+		item.Mtime = parseInt64(result.Metadata[metaMtime])
+		if result.Metadata[metaSymlinkTarget] != "" {
+			item.FileType = model.FileSymlink
+			item.LinkTarget = result.Metadata[metaSymlinkTarget]
+		}
+	}
+
+	return item, nil
 }
 
 // --- Reader ---

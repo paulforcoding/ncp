@@ -150,7 +150,7 @@ func (j *CksumJob) finalize(walker *copy.Walker, dbWriter *CksumDBWriter, walkEr
 
 	// Emit final progress_summary
 	if j.fileLog != nil {
-		dbWriter.emitProgressSummary(true, exitCode)
+		dbWriter.EmitFinalSummary(exitCode)
 	}
 
 	// Generate internal report (still used for report file, but no longer emits cksum_complete)
