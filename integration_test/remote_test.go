@@ -600,3 +600,142 @@ func TestIntegration_RemotePull_Resume(t *testing.T) {
 		t.Fatalf("verify copy after resume: %v", err)
 	}
 }
+
+// --- Remote → Remote copy ---
+
+// TestIntegration_RemoteToRemote_Copy covers matrix case #13 (Remote→Remote, copy, no-resume).
+func TestIntegration_RemoteToRemote_Copy(t *testing.T) {
+	serveDir := t.TempDir()
+	srcDir := filepath.Join(serveDir, "src")
+	dstDir := filepath.Join(serveDir, "dst")
+	os.MkdirAll(srcDir, 0o755)
+	os.MkdirAll(dstDir, 0o755)
+
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
+	}
+	for relPath, content := range files {
+		path := filepath.Join(srcDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+
+	addr := startTestServer(t, serveDir)
+
+	srcObj, _ := remote.NewSource(addr, srcDir)
+	store := openTestStore(t)
+
+	dstFactory := func(id int) (storage.Destination, error) {
+		return remote.NewDestination(addr, dstDir)
+	}
+
+	job := copy.NewJob(srcObj, nil, store,
+		copy.WithParallelism(2),
+		copy.WithDstFactory(dstFactory),
+		copy.WithEnsureDirMtime(false),
+		copy.WithDstBase("ncp://"+addr),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	exitCode, err := job.Run(ctx)
+	if err != nil {
+		t.Fatalf("copy job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	for relPath, want := range files {
+		path := filepath.Join(dstDir, relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
+		}
+	}
+}
+
+// TestIntegration_RemoteToRemote_Copy_Resume covers matrix case #14 (Remote→Remote, copy, resume).
+func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
+	serveDir := t.TempDir()
+	srcDir := filepath.Join(serveDir, "src")
+	dstDir := filepath.Join(serveDir, "dst")
+	os.MkdirAll(srcDir, 0o755)
+	os.MkdirAll(dstDir, 0o755)
+
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
+		"c.txt":        "gamma",
+	}
+	for relPath, content := range files {
+		path := filepath.Join(srcDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+
+	addr := startTestServer(t, serveDir)
+
+	srcObj, _ := remote.NewSource(addr, srcDir)
+	store := openTestStore(t)
+
+	mu := &sync.Mutex{}
+	count := 0
+	dstFactory := func(id int) (storage.Destination, error) {
+		dst, err := remote.NewDestination(addr, dstDir)
+		if err != nil {
+			return nil, err
+		}
+		return &failAfterNShared{Destination: dst, mu: mu, count: &count, failAt: 1}, nil
+	}
+
+	job := copy.NewJob(srcObj, nil, store,
+		copy.WithParallelism(2),
+		copy.WithDstFactory(dstFactory),
+		copy.WithEnsureDirMtime(false),
+		copy.WithDstBase("ncp://"+addr),
+	)
+
+	exitCode, err := job.Run(context.Background())
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if err == nil {
+		t.Fatal("expected error for partial failure")
+	}
+
+	dstFactory2 := func(id int) (storage.Destination, error) {
+		return remote.NewDestination(addr, dstDir)
+	}
+
+	job2 := copy.NewJob(srcObj, nil, store,
+		copy.WithResume(true),
+		copy.WithDstFactory(dstFactory2),
+		copy.WithEnsureDirMtime(false),
+		copy.WithDstBase("ncp://"+addr),
+	)
+
+	exitCode, err = job2.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
+	}
+
+	for relPath, want := range files {
+		path := filepath.Join(dstDir, relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
+		}
+	}
+}

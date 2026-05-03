@@ -164,7 +164,7 @@ func main() {
 	cksumCmd := &cobra.Command{
 		Use:   "cksum <src> <dst>",
 		Short: "Verify data consistency between source and destination",
-		Long:  "Verify source and destination data consistency by comparing MD5 checksums. Supports local↔local, local↔OSS, and OSS↔OSS.",
+		Long:  "Verify source and destination data consistency by comparing checksums. Both sides are read; supports any combination of local, OSS, and ncp:// (remote) endpoints.",
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runCksum,
 	}
@@ -629,14 +629,6 @@ func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID st
 	src, err := di.NewSourceWithOSS(srcPath, ossCfg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create source: %w", err)
-	}
-
-	// For cksum, dst must also be a Source (readable).
-	// ncp:// as dst does not support cksum because the remote server
-	// doesn't expose a Restatter interface for the cksum workflow.
-	u, _ := di.ParsePath(dstPath)
-	if u.Scheme == "ncp" {
-		return nil, nil, nil, fmt.Errorf("ncp:// destinations do not support cksum (protocol has built-in MD5 verification)")
 	}
 
 	dst, err := di.NewSourceWithOSS(dstPath, ossCfg)
