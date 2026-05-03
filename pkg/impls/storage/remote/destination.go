@@ -3,7 +3,6 @@ package remote
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -19,12 +18,21 @@ type Destination struct {
 
 var _ storage.Destination = (*Destination)(nil)
 
-// NewDestination dials the remote server and returns a Destination ready for use.
+// NewDestination dials the remote server, sends MsgInit with basePath,
+// and returns a Destination ready for use.
 func NewDestination(addr, basePath string) (*Destination, error) {
 	conn, err := protocol.Dial(addr)
 	if err != nil {
 		return nil, fmt.Errorf("remote destination dial %s: %w", addr, err)
 	}
+
+	// Send MsgInit to tell the server our basePath
+	initMsg := &protocol.InitMsg{BasePath: basePath}
+	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("remote init %s: %w", addr, err)
+	}
+
 	return &Destination{conn: conn, basePath: basePath}, nil
 }
 
@@ -110,9 +118,7 @@ func (d *Destination) Done() error {
 	return err
 }
 
+// fullPath returns relPath — basePath is already sent via MsgInit.
 func (d *Destination) fullPath(relPath string) string {
-	if d.basePath == "" {
-		return relPath
-	}
-	return filepath.Join(d.basePath, relPath)
+	return relPath
 }

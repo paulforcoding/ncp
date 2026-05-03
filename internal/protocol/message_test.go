@@ -227,3 +227,183 @@ func TestEncodeError(t *testing.T) {
 		t.Fatalf("message mismatch: got %q", m.Message)
 	}
 }
+
+// --- New messages for ncp:// source ---
+
+func TestInitMsg_Roundtrip(t *testing.T) {
+	m := &InitMsg{BasePath: "/data/backup"}
+	data := m.Encode()
+
+	m2 := &InitMsg{}
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m2.BasePath != m.BasePath {
+		t.Fatalf("basePath mismatch: got %q, want %q", m2.BasePath, m.BasePath)
+	}
+}
+
+func TestInitMsg_EmptyBasePath(t *testing.T) {
+	m := &InitMsg{BasePath: ""}
+	data := m.Encode()
+
+	m2 := &InitMsg{}
+	m2.Decode(data)
+	if m2.BasePath != "" {
+		t.Fatalf("expected empty basePath, got %q", m2.BasePath)
+	}
+}
+
+func TestListMsg_Roundtrip(t *testing.T) {
+	m := &ListMsg{ContinuationToken: "1000"}
+	data := m.Encode()
+
+	m2 := &ListMsg{}
+	m2.Decode(data)
+	if m2.ContinuationToken != m.ContinuationToken {
+		t.Fatalf("token mismatch: got %q, want %q", m2.ContinuationToken, m.ContinuationToken)
+	}
+}
+
+func TestListMsg_EmptyToken(t *testing.T) {
+	m := &ListMsg{ContinuationToken: ""}
+	data := m.Encode()
+
+	m2 := &ListMsg{}
+	m2.Decode(data)
+	if m2.ContinuationToken != "" {
+		t.Fatalf("expected empty token, got %q", m2.ContinuationToken)
+	}
+}
+
+func TestPreadMsg_Roundtrip(t *testing.T) {
+	m := &PreadMsg{FD: 7, Offset: 4096, Length: 8192}
+	data := m.Encode()
+
+	m2 := &PreadMsg{}
+	m2.Decode(data)
+	if m2.FD != m.FD {
+		t.Fatalf("fd mismatch: got %d, want %d", m2.FD, m.FD)
+	}
+	if m2.Offset != m.Offset {
+		t.Fatalf("offset mismatch: got %d, want %d", m2.Offset, m.Offset)
+	}
+	if m2.Length != m.Length {
+		t.Fatalf("length mismatch: got %d, want %d", m2.Length, m.Length)
+	}
+}
+
+func TestStatMsg_Roundtrip(t *testing.T) {
+	m := &StatMsg{RelPath: "subdir/file.txt"}
+	data := m.Encode()
+
+	m2 := &StatMsg{}
+	m2.Decode(data)
+	if m2.RelPath != m.RelPath {
+		t.Fatalf("relpath mismatch: got %q, want %q", m2.RelPath, m.RelPath)
+	}
+}
+
+func TestListEntry_Roundtrip(t *testing.T) {
+	m := &ListEntry{
+		RelPath:    "dir/file.txt",
+		FileType:   1,
+		FileSize:   1024,
+		Mode:       0644,
+		Mtime:      1700000000000000000,
+		LinkTarget: "",
+		ETag:       "abc123",
+	}
+	data := m.Encode()
+
+	m2 := &ListEntry{}
+	m2.Decode(data)
+	if m2.RelPath != m.RelPath {
+		t.Fatalf("relpath mismatch: got %q, want %q", m2.RelPath, m.RelPath)
+	}
+	if m2.FileType != m.FileType {
+		t.Fatalf("filetype mismatch: got %d, want %d", m2.FileType, m.FileType)
+	}
+	if m2.FileSize != m.FileSize {
+		t.Fatalf("filesize mismatch: got %d, want %d", m2.FileSize, m.FileSize)
+	}
+	if m2.Mode != m.Mode {
+		t.Fatalf("mode mismatch: got %o, want %o", m2.Mode, m.Mode)
+	}
+	if m2.Mtime != m.Mtime {
+		t.Fatalf("mtime mismatch: got %d, want %d", m2.Mtime, m.Mtime)
+	}
+	if m2.ETag != m.ETag {
+		t.Fatalf("etag mismatch: got %q, want %q", m2.ETag, m.ETag)
+	}
+}
+
+func TestListEntry_Symlink(t *testing.T) {
+	m := &ListEntry{
+		RelPath:    "link",
+		FileType:   3,
+		FileSize:   0,
+		Mode:       0777,
+		Mtime:      1700000000000000000,
+		LinkTarget: "target.txt",
+		ETag:       "",
+	}
+	data := m.Encode()
+
+	m2 := &ListEntry{}
+	m2.Decode(data)
+	if m2.LinkTarget != m.LinkTarget {
+		t.Fatalf("linktarget mismatch: got %q, want %q", m2.LinkTarget, m.LinkTarget)
+	}
+}
+
+func TestDataMsg_WithEntries(t *testing.T) {
+	m := &DataMsg{
+		ResultCode: 0,
+		Entries: []ListEntry{
+			{RelPath: "file1.txt", FileType: 1, FileSize: 100, Mode: 0644, Mtime: 1700000000},
+			{RelPath: "dir1", FileType: 2, FileSize: 0, Mode: 0755, Mtime: 1700000001},
+		},
+		ContinuationToken: "1000",
+		Data:              nil,
+	}
+	data := m.Encode()
+
+	m2 := &DataMsg{}
+	m2.Decode(data)
+	if m2.ResultCode != m.ResultCode {
+		t.Fatalf("resultcode mismatch: got %d, want %d", m2.ResultCode, m.ResultCode)
+	}
+	if len(m2.Entries) != 2 {
+		t.Fatalf("entry count: got %d, want 2", len(m2.Entries))
+	}
+	if m2.Entries[0].RelPath != "file1.txt" {
+		t.Fatalf("entry[0] relpath: got %q", m2.Entries[0].RelPath)
+	}
+	if m2.Entries[1].RelPath != "dir1" {
+		t.Fatalf("entry[1] relpath: got %q", m2.Entries[1].RelPath)
+	}
+	if m2.ContinuationToken != "1000" {
+		t.Fatalf("token mismatch: got %q", m2.ContinuationToken)
+	}
+}
+
+func TestDataMsg_WithData(t *testing.T) {
+	payload := []byte("hello world from pread")
+	m := &DataMsg{
+		ResultCode:        0,
+		Entries:           nil,
+		ContinuationToken: "",
+		Data:              payload,
+	}
+	data := m.Encode()
+
+	m2 := &DataMsg{}
+	m2.Decode(data)
+	if !bytes.Equal(m2.Data, payload) {
+		t.Fatalf("data mismatch: got %q, want %q", string(m2.Data), string(payload))
+	}
+	if len(m2.Entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(m2.Entries))
+	}
+}

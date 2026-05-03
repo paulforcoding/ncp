@@ -19,6 +19,7 @@ import (
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/internal/protocol"
+	"github.com/zp001/ncp/internal/serve"
 	"github.com/zp001/ncp/internal/task"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -158,9 +159,6 @@ func main() {
 		RunE:  runServe,
 	}
 	serveCmd.Flags().String("listen", ":9900", "Listen address (host:port)")
-	serveCmd.Flags().String("base", "", "Base directory for received files (required)")
-	serveCmd.Flags().Bool("enable-SyncWrites", true, "Enable fsync on write")
-	serveCmd.Flags().Bool("disable-SyncWrites", false, "Disable fsync on write")
 
 	// cksum command
 	cksumCmd := &cobra.Command{
@@ -633,7 +631,9 @@ func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID st
 		return nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
 
-	// For cksum, dst must also be a Source (readable)
+	// For cksum, dst must also be a Source (readable).
+	// ncp:// as dst does not support cksum because the remote server
+	// doesn't expose a Restatter interface for the cksum workflow.
 	u, _ := di.ParsePath(dstPath)
 	if u.Scheme == "ncp" {
 		return nil, nil, nil, fmt.Errorf("ncp:// destinations do not support cksum (protocol has built-in MD5 verification)")
@@ -656,22 +656,6 @@ func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID st
 // runServe handles `ncp serve` — starts the ncp protocol server.
 func runServe(cmd *cobra.Command, args []string) error {
 	listenAddr, _ := cmd.Flags().GetString("listen")
-	baseDir, _ := cmd.Flags().GetString("base")
-
-	if baseDir == "" {
-		return fmt.Errorf("--base is required")
-	}
-
-	resolveBoolFlag(cmd, "SyncWrites", "enable-SyncWrites", "disable-SyncWrites")
-	syncWrites, _ := cmd.Flags().GetBool("SyncWrites")
-
-	dst, err := di.NewDestinationWithConfig(baseDir, di.DestConfig{
-		SyncWrites:  syncWrites,
-		IOSizeTiers: model.DefaultIOSizeTiers(),
-	})
-	if err != nil {
-		return fmt.Errorf("create local destination: %w", err)
-	}
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -679,7 +663,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	handlerFactory := func() protocol.ConnHandler {
-		return newServeConnHandler(dst)
+		return serve.NewConnHandler()
 	}
 
 	srv := protocol.NewServer(listener, handlerFactory)
@@ -692,7 +676,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		srv.Close()
 	}()
 
-	fmt.Fprintf(os.Stderr, "{\"event\":\"serve\",\"listen\":%q,\"base\":%q}\n", listenAddr, baseDir)
+	fmt.Fprintf(os.Stderr, "{\"event\":\"serve\",\"listen\":%q}\n", listenAddr)
 
 	return srv.Serve()
 }

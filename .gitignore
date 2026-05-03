@@ -29,6 +29,10 @@ __pycache__/
 # Integration test
 .integrated_test/
 
+# Local environment
+.env
+.env.local
+
 .aiinputs/
 .aireports/
 .claude/
