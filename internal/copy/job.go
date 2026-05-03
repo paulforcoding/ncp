@@ -184,7 +184,7 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 
 	// Emit final progress_summary
 	if j.fileLog != nil {
-		dbWriter.emitProgressSummary(true, exitCode)
+		dbWriter.EmitFinalSummary(exitCode)
 	}
 
 	// Generate internal report (still used for report file, but no longer emits copy_complete)
