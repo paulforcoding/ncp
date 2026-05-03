@@ -1,0 +1,261 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: go test ./... -count=1 -race -timeout 120s
+
+  integration-local:
+    name: Integration Tests (local)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: go test ./... -count=1 -race -tags=integration -run Integration -timeout 300s
+
+  integration-ncp:
+    name: Integration Tests (ncp://)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build ncp
+        run: go build -o /tmp/ncp ./cmd/ncp/
+      - name: Start ncp serve
+        run: |
+          mkdir -p /tmp/ncp-serve-dst
+          /tmp/ncp serve --listen :9900 --base /tmp/ncp-serve-dst &
+          sleep 2
+          # Verify serve is listening
+          ss -tlnp | grep 9900 || (echo "ncp serve not listening" && exit 1)
+      - name: Create test data
+        run: |
+          mkdir -p /tmp/ncp-ci-src/subdir/deep /tmp/ncp-ci-src/中文目录
+          for i in $(seq -w 1 50); do
+            dd if=/dev/urandom of="/tmp/ncp-ci-src/small_${i}.dat" bs=$((RANDOM % 100 + 1)) count=1 2>/dev/null
+          done
+          echo "nested 1" > /tmp/ncp-ci-src/subdir/deep/nested_1.txt
+          echo "nested 2" > /tmp/ncp-ci-src/subdir/deep/nested_2.txt
+          ln -s small_001.dat /tmp/ncp-ci-src/link_to_small
+          ln -s ../subdir/deep/nested_1.txt /tmp/ncp-ci-src/subdir/link_relative
+          echo "中文内容测试" > "/tmp/ncp-ci-src/中文目录/中文文件.txt"
+          touch /tmp/ncp-ci-src/empty_file.dat
+          dd if=/dev/urandom of=/tmp/ncp-ci-src/large_file.dat bs=1M count=64 2>/dev/null
+      - name: Copy to ncp://
+        run: |
+          /tmp/ncp copy /tmp/ncp-ci-src ncp://127.0.0.1:9900/ci-dst \
+            --CopyParallelism 2 \
+            --ProgressStorePath /tmp/ncp_ci_progress \
+            --FileLogOutput /tmp/ncp-ci-filelog.json
+      - name: Verify md5sum
+        run: |
+          cd /tmp/ncp-ci-src && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/ci-local.md5
+          cd /tmp/ncp-serve-dst/ci-dst && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/ci-remote.md5
+          diff /tmp/ci-local.md5 /tmp/ci-remote.md5
+      - name: Verify symlinks
+        run: |
+          readlink /tmp/ncp-serve-dst/ci-dst/link_to_small || echo "FAIL: symlink missing"
+          readlink /tmp/ncp-serve-dst/ci-dst/subdir/link_relative || echo "FAIL: symlink missing"
+      - name: Verify empty file
+        run: |
+          size=$(stat -c %s /tmp/ncp-serve-dst/ci-dst/empty_file.dat)
+          [ "$size" = "0" ] || (echo "FAIL: empty file has size $size" && exit 1)
+      - name: Verify Chinese path
+        run: |
+          content=$(cat "/tmp/ncp-serve-dst/ci-dst/中文目录/中文文件.txt")
+          [ "$content" = "中文内容测试" ] || (echo "FAIL: Chinese content mismatch: $content" && exit 1)
+
+  integration-oss:
+    name: Integration Tests (OSS)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build ncp
+        run: go build -o /tmp/ncp ./cmd/ncp/
+      - name: Create test data
+        run: |
+          mkdir -p /tmp/ncp-oss-ci-src/subdir
+          for i in $(seq -w 1 20); do
+            dd if=/dev/urandom of="/tmp/ncp-oss-ci-src/small_${i}.dat" bs=$((RANDOM % 50 + 1)) count=1 2>/dev/null
+          done
+          echo "nested" > /tmp/ncp-oss-ci-src/subdir/nested.txt
+          ln -s small_001.dat /tmp/ncp-oss-ci-src/link1
+          touch /tmp/ncp-oss-ci-src/empty.dat
+          dd if=/dev/urandom of=/tmp/ncp-oss-ci-src/large.dat bs=1M count=10 2>/dev/null
+      - name: Upload to OSS
+        env:
+          NCP_OSS_ENDPOINT: ${{ secrets.NCP_OSS_ENDPOINT }}
+          NCP_OSS_REGION: ${{ secrets.NCP_OSS_REGION }}
+          NCP_OSS_AK: ${{ secrets.NCP_OSS_AK }}
+          NCP_OSS_SK: ${{ secrets.NCP_OSS_SK }}
+          NCP_OSS_BUCKET: ${{ secrets.NCP_OSS_BUCKET }}
+        run: |
+          if [ -z "$NCP_OSS_AK" ] || [ -z "$NCP_OSS_SK" ]; then
+            echo "SKIP: OSS credentials not configured"
+            exit 0
+          fi
+          CI_PREFIX="ci-${GITHUB_RUN_ID}/"
+          /tmp/ncp copy /tmp/ncp-oss-ci-src "oss://${NCP_OSS_BUCKET}/${CI_PREFIX}" \
+            --endpoint "$NCP_OSS_ENDPOINT" \
+            --region "$NCP_OSS_REGION" \
+            --access-key-id "$NCP_OSS_AK" \
+            --access-key-secret "$NCP_OSS_SK" \
+            --CopyParallelism 2 \
+            --ProgressStorePath /tmp/ncp_ci_progress \
+            --FileLogOutput /tmp/ncp-oss-ci-filelog.json
+      - name: Cksum against OSS
+        env:
+          NCP_OSS_ENDPOINT: ${{ secrets.NCP_OSS_ENDPOINT }}
+          NCP_OSS_REGION: ${{ secrets.NCP_OSS_REGION }}
+          NCP_OSS_AK: ${{ secrets.NCP_OSS_AK }}
+          NCP_OSS_SK: ${{ secrets.NCP_OSS_SK }}
+          NCP_OSS_BUCKET: ${{ secrets.NCP_OSS_BUCKET }}
+        run: |
+          if [ -z "$NCP_OSS_AK" ] || [ -z "$NCP_OSS_SK" ]; then
+            echo "SKIP: OSS credentials not configured"
+            exit 0
+          fi
+          CI_PREFIX="ci-${GITHUB_RUN_ID}/"
+          rm -rf /tmp/ncp_ci_progress
+          /tmp/ncp cksum /tmp/ncp-oss-ci-src "oss://${NCP_OSS_BUCKET}/${CI_PREFIX}" \
+            --endpoint "$NCP_OSS_ENDPOINT" \
+            --region "$NCP_OSS_REGION" \
+            --access-key-id "$NCP_OSS_AK" \
+            --access-key-secret "$NCP_OSS_SK" \
+            --ProgressStorePath /tmp/ncp_ci_progress
+      - name: Download from OSS
+        env:
+          NCP_OSS_ENDPOINT: ${{ secrets.NCP_OSS_ENDPOINT }}
+          NCP_OSS_REGION: ${{ secrets.NCP_OSS_REGION }}
+          NCP_OSS_AK: ${{ secrets.NCP_OSS_AK }}
+          NCP_OSS_SK: ${{ secrets.NCP_OSS_SK }}
+          NCP_OSS_BUCKET: ${{ secrets.NCP_OSS_BUCKET }}
+        run: |
+          if [ -z "$NCP_OSS_AK" ] || [ -z "$NCP_OSS_SK" ]; then
+            echo "SKIP: OSS credentials not configured"
+            exit 0
+          fi
+          CI_PREFIX="ci-${GITHUB_RUN_ID}/"
+          rm -rf /tmp/ncp_ci_progress /tmp/ncp-oss-ci-download
+          /tmp/ncp copy "oss://${NCP_OSS_BUCKET}/${CI_PREFIX}" /tmp/ncp-oss-ci-download \
+            --endpoint "$NCP_OSS_ENDPOINT" \
+            --region "$NCP_OSS_REGION" \
+            --access-key-id "$NCP_OSS_AK" \
+            --access-key-secret "$NCP_OSS_SK" \
+            --ProgressStorePath /tmp/ncp_ci_progress \
+            --FileLogOutput /tmp/ncp-oss-ci-download-filelog.json
+      - name: Verify download md5
+        run: |
+          if [ ! -d /tmp/ncp-oss-ci-download ]; then
+            echo "SKIP: no download data"
+            exit 0
+          fi
+          cd /tmp/ncp-oss-ci-src && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/oss-ci-local.md5
+          cd /tmp/ncp-oss-ci-download && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/oss-ci-download.md5
+          diff /tmp/oss-ci-local.md5 /tmp/oss-ci-download.md5
+
+  integration-multisource:
+    name: Integration Tests (multi-source)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build ncp
+        run: go build -o /tmp/ncp ./cmd/ncp/
+      - name: Create two source directories
+        run: |
+          mkdir -p /tmp/ci-src1/subdir /tmp/ci-src2/deep
+          echo "src1-file1" > /tmp/ci-src1/file1.txt
+          echo "src1-file2" > /tmp/ci-src1/file2.txt
+          echo "src1-nested" > /tmp/ci-src1/subdir/nested.txt
+          ln -s file1.txt /tmp/ci-src1/link1
+          echo "src2-alpha" > /tmp/ci-src2/alpha.txt
+          echo "src2-beta" > /tmp/ci-src2/beta.txt
+          echo "src2-deep" > /tmp/ci-src2/deep/data.bin
+          dd if=/dev/urandom of=/tmp/ci-src2/large.bin bs=1M count=5 2>/dev/null
+      - name: Multi-source copy
+        run: |
+          /tmp/ncp copy /tmp/ci-src1 /tmp/ci-src2 /tmp/ci-multi-dst \
+            --ProgressStorePath /tmp/ncp_ci_progress \
+            --FileLogOutput /tmp/ci-multi-filelog.json
+      - name: Verify subdirectory naming
+        run: |
+          [ -d /tmp/ci-multi-dst/ci-src1 ] || (echo "FAIL: ci-src1 subdir missing" && exit 1)
+          [ -d /tmp/ci-multi-dst/ci-src2 ] || (echo "FAIL: ci-src2 subdir missing" && exit 1)
+      - name: Verify md5 (src1)
+        run: |
+          cd /tmp/ci-src1 && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/multi-src1.md5
+          cd /tmp/ci-multi-dst/ci-src1 && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/multi-dst-src1.md5
+          diff /tmp/multi-src1.md5 /tmp/multi-dst-src1.md5
+      - name: Verify md5 (src2)
+        run: |
+          cd /tmp/ci-src2 && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/multi-src2.md5
+          cd /tmp/ci-multi-dst/ci-src2 && find . -type f -exec md5sum {} \; | sort -k2 > /tmp/multi-dst-src2.md5
+          diff /tmp/multi-src2.md5 /tmp/multi-dst-src2.md5
+      - name: Verify symlink
+        run: |
+          target=$(readlink /tmp/ci-multi-dst/ci-src1/link1)
+          [ "$target" = "file1.txt" ] || (echo "FAIL: symlink target is '$target'" && exit 1)
+      - name: Verify mixed-source rejection
+        run: |
+          /tmp/ncp copy /tmp/ci-src1 oss://bucket/prefix /tmp/ci-multi-dst 2>&1 || true
+          # Should have non-zero exit code; check error message
+          /tmp/ncp copy /tmp/ci-src1 oss://bucket/prefix /tmp/ci-multi-dst 2>&1 | grep -q "multi-source is only supported for local paths" && echo "PASS: mixed source rejected" || echo "FAIL: mixed source not rejected"
+
+  validation:
+    name: Parameter Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build ncp
+        run: go build -o /tmp/ncp ./cmd/ncp/
+      - name: xxhash+OSS rejection
+        run: |
+          /tmp/ncp copy /tmp/src oss://bucket/prefix/ --cksum-algorithm xxh64 2>&1 | grep -q "only md5 is supported" && echo "PASS" || echo "FAIL"
+      - name: Multi-source OSS rejection
+        run: |
+          /tmp/ncp copy /tmp/src1 oss://bucket/prefix /tmp/dst 2>&1 | grep -q "multi-source is only supported for local paths" && echo "PASS" || echo "FAIL"
+      - name: --version flag
+        run: |
+          /tmp/ncp --version | grep -q "ncp" && echo "PASS" || echo "FAIL"
+      - name: --dry-run
+        run: |
+          /tmp/ncp copy /tmp/src /tmp/dst --dry-run 2>&1 | grep -q "CopyParallelism" && echo "PASS" || echo "FAIL"

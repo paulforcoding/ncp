@@ -25,8 +25,7 @@ type Job struct {
 	logInterval    int
 	ioSize         int
 	cksumAlgo      model.CksumAlgorithm
-	discoverBuf    int
-	resultBuf      int
+	channelBuf     int
 	ensureDirMtime bool
 	resume         bool
 	skipByMtime    bool
@@ -40,8 +39,7 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 		dst:            dst,
 		store:          store,
 		parallelism:    1,
-		discoverBuf:    100000,
-		resultBuf:      100000,
+		channelBuf:     100000,
 		ensureDirMtime: true,
 		metrics:        &ThroughputMeter{},
 	}
@@ -57,7 +55,7 @@ type JobOption func(*Job)
 func WithParallelism(n int) JobOption             { return func(j *Job) { j.parallelism = n } }
 func WithFileLog(fl FileLogger, sec int) JobOption { return func(j *Job) { j.fileLog = fl; j.logInterval = sec } }
 func WithIOSize(size int) JobOption               { return func(j *Job) { j.ioSize = size } }
-func WithBufferSizes(d, r int) JobOption          { return func(j *Job) { j.discoverBuf = d; j.resultBuf = r } }
+func WithChannelBuf(n int) JobOption              { return func(j *Job) { j.channelBuf = n } }
 func WithTaskID(id string) JobOption              { return func(j *Job) { j.taskID = id } }
 func WithDstBase(base string) JobOption           { return func(j *Job) { j.dstBase = base } }
 func WithEnsureDirMtime(v bool) JobOption         { return func(j *Job) { j.ensureDirMtime = v } }
@@ -70,8 +68,8 @@ func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 
 // Run executes the copy job and blocks until completion.
 func (j *Job) Run(ctx context.Context) (int, error) {
-	discoverCh := make(chan model.DiscoverItem, j.discoverBuf)
-	resultCh := make(chan model.FileResult, j.resultBuf)
+	discoverCh := make(chan model.DiscoverItem, j.channelBuf)
+	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
 	walker := NewWalker(j.src, j.store, j.fileLog, logDuration)

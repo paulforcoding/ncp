@@ -23,8 +23,7 @@ type CksumJob struct {
 	logInterval int
 	ioSize      int
 	cksumAlgo   model.CksumAlgorithm
-	discoverBuf int
-	resultBuf   int
+	channelBuf  int
 	resume      bool
 	skipByMtime bool
 	metrics     *copy.ThroughputMeter
@@ -38,8 +37,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 		store:       store,
 		parallelism: 1,
 		cksumAlgo:   model.DefaultCksumAlgorithm,
-		discoverBuf: 100000,
-		resultBuf:   100000,
+		channelBuf:  100000,
 		metrics:     &copy.ThroughputMeter{},
 	}
 	for _, o := range opts {
@@ -60,11 +58,12 @@ func WithCksumTaskID(id string) CksumJobOption               { return func(j *Ck
 func WithCksumResume(v bool) CksumJobOption                  { return func(j *CksumJob) { j.resume = v } }
 func WithCksumSkipByMtime(v bool) CksumJobOption            { return func(j *CksumJob) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption { return func(j *CksumJob) { j.cksumAlgo = algo } }
+func WithCksumChannelBuf(n int) CksumJobOption              { return func(j *CksumJob) { j.channelBuf = n } }
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {
-	cksumCh := make(chan model.DiscoverItem, j.discoverBuf)
-	resultCh := make(chan model.FileResult, j.resultBuf)
+	cksumCh := make(chan model.DiscoverItem, j.channelBuf)
+	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
 	walker := copy.NewWalker(j.src, j.store, j.fileLog, logDuration)

@@ -25,6 +25,7 @@ type Config struct {
 	ServerListenAddr  string             `json:"ServerListenAddr" mapstructure:"ServerListenAddr"`
 	CksumAlgorithm    string             `json:"CksumAlgorithm" mapstructure:"CksumAlgorithm"`
 	SkipByMtime       bool               `json:"SkipByMtime" mapstructure:"SkipByMtime"`
+	ChannelBuf        int                `json:"ChannelBuf" mapstructure:"ChannelBuf"`
 
 	// OSS configuration
 	OSSEndpoint string `json:"OSSEndpoint,omitempty" mapstructure:"OSSEndpoint"`
@@ -43,7 +44,7 @@ func DefaultConfig() Config {
 		ProgramLogLevel:   "info",
 		ProgramLogOutput:  "console",
 		FileLogEnabled:    true,
-		FileLogOutput:     "/tmp/ncp_file_log.json",
+		FileLogOutput:     "console",
 		FileLogInterval:   5,
 		DirectIO:          false,
 		SyncWrites:        true,

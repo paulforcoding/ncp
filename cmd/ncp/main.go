@@ -72,6 +72,7 @@ func main() {
 	copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	copyCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	copyCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
+	copyCmd.Flags().Int("ChannelBuf", 100000, "Channel buffer size for discover/result queues")
 
 	// Bind all flags to Viper
 	v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -91,6 +92,7 @@ func main() {
 	v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
 	v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
 	v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
+	v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -277,6 +279,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		copy.WithEnsureDirMtime(cfg.EnsureDirMtime),
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithSkipByMtime(cfg.SkipByMtime),
+		copy.WithChannelBuf(cfg.ChannelBuf),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -342,6 +345,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
 		copy.WithSkipByMtime(cfg.SkipByMtime),
+		copy.WithChannelBuf(cfg.ChannelBuf),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -435,6 +439,7 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithResume(true),
 		copy.WithSkipByMtime(cfg.SkipByMtime),
+		copy.WithChannelBuf(cfg.ChannelBuf),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -457,6 +462,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
+		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
 	)
 	return job.Run(ctx)
 }
@@ -541,6 +547,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 		cksum.WithCksumTaskID(taskID),
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
+		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
 	)
 
 	exitCode, err := job.Run(ctx)
@@ -597,6 +604,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
+		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
 	)
 
 	exitCode, err := job.Run(ctx)
@@ -756,7 +764,7 @@ func runTaskDelete(cmd *cobra.Command, args []string) error {
 // setupFileLog creates a FileLog emitter.
 func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emitter, error) {
 	flOutput := cfg.FileLogOutput
-	if flOutput != "console" {
+	if flOutput == "" || flOutput == "progress" {
 		flOutput = filepath.Join(progressDir, taskID, "file.log")
 	}
 	fl, err := filelog.NewEmitter(taskID, flOutput, cfg.FileLogEnabled)

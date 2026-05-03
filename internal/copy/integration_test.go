@@ -131,7 +131,7 @@ func TestIntegration_ChannelFullDispatch(t *testing.T) {
 	// Small buffer to force channel full
 	exitCode, err := runCopyJob(t, src, dst, store,
 		WithParallelism(1),
-		WithBufferSizes(1, 1),
+		WithChannelBuf(1),
 	)
 	if err != nil {
 		t.Fatalf("copy job: %v", err)
@@ -484,7 +484,7 @@ func TestIntegration_ResumeAfterCancellation(t *testing.T) {
 	cancelSrc := &cancelAfterWalkSource{Source: srcObj, limit: 1000, cancel: cancel}
 
 	// First run: walk gets interrupted by context cancellation
-	job := NewJob(cancelSrc, dstObj, store, WithParallelism(1), WithBufferSizes(1, 1))
+	job := NewJob(cancelSrc, dstObj, store, WithParallelism(1), WithChannelBuf(1))
 	job.Run(ctx)
 
 	// Walk should have been interrupted

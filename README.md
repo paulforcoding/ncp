@@ -25,6 +25,94 @@ make build
 # Binary: ./ncp
 ```
 
+## URL Schemes
+
+ncp uses URL-style path prefixes to select the storage backend:
+
+| Scheme | Syntax | Source | Destination | Example |
+|--------|--------|--------|-------------|---------|
+| *(none)* | `/path/to/dir` | Yes | Yes | `/data/project` |
+| `ncp://` | `ncp://host:port/path` | No | Yes | `ncp://server:9900/backup` |
+| `oss://` | `oss://bucket/prefix/` | Yes | Yes | `oss://my-bucket/backup/` |
+
+**Constraints:**
+- `ncp://` is destination-only (remote server receives pushes).
+- `ncp cksum` does not support `ncp://` destinations — the protocol has built-in MD5 verification.
+- `oss://` paths require additional OSS parameters (`--endpoint`, `--region`, `--access-key-id`, `--access-key-secret`).
+
+### Multi-Source Copy
+
+`ncp copy` accepts multiple source paths. Only **local paths** can be used as multi-source — mixing `oss://` or `ncp://` with other sources is not allowed.
+
+```bash
+# OK: multiple local sources
+ncp copy /data/logs /data/configs /backup/
+
+# ERROR: mixing local and OSS sources
+ncp copy /data/logs oss://bucket/prefix/ /backup/
+
+# ERROR: multiple OSS sources
+ncp copy oss://bucket-a/data/ oss://bucket-b/data/ /backup/
+```
+
+Each source's files appear under its directory name in the destination:
+
+```
+ncp copy /data/logs /data/configs /backup/
+# Result:
+#   /backup/logs/...
+#   /backup/configs/...
+```
+
+### OSS Configuration
+
+When using `oss://` paths (as source or destination), you must provide Alibaba Cloud OSS credentials via CLI flags or config file:
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--endpoint` | Yes | OSS endpoint, e.g. `oss-cn-shenzhen.aliyuncs.com` |
+| `--region` | Yes | OSS region, e.g. `cn-shenzhen` |
+| `--access-key-id` | Yes | Alibaba Cloud AccessKey ID |
+| `--access-key-secret` | Yes | Alibaba Cloud AccessKey Secret |
+
+The same set of OSS parameters applies to the entire command — if both source and destination are `oss://`, they must share the same endpoint/region/credentials (i.e., be in the same OSS region).
+
+**Constraints:**
+- `--cksum-algorithm` must be `md5` when OSS is involved (OSS uses Content-MD5 for integrity verification; `xxh64` is not supported).
+- POSIX metadata (mode, uid, gid, mtime, symlink target, xattr) is preserved as custom object metadata with the `ncp-` prefix (e.g. `ncp-mode`, `ncp-uid`).
+
+Example:
+
+```bash
+# Local → OSS
+ncp copy /data/project oss://my-bucket/backup/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+
+# OSS → Local
+ncp copy oss://my-bucket/backup/ /data/restore/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+
+# OSS → OSS (same region)
+ncp copy oss://src-bucket/data/ oss://dst-bucket/backup/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+
+# Verify OSS data
+ncp cksum /data/project oss://my-bucket/backup/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+```
+
 ## Quick Start
 
 ```bash
