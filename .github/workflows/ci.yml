@@ -20,10 +20,15 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          args: --timeout=5m
 
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
