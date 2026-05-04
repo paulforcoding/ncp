@@ -55,7 +55,7 @@ func GenerateReport(taskID string, store progress.ProgressStore, done, failed in
 }
 
 // WriteReport writes the report as JSON to a file and an optional writer.
-// If out is non-nil, the JSON report is also written there (e.g. os.Stdout).
+// If out is non-nil, the JSON report is also written there (e.g. a file writer).
 func WriteReport(report *Report, reportPath string, out io.Writer) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -21,6 +22,6 @@ func checkFilePerms(path string) {
 
 	perm := info.Mode().Perm()
 	if perm&0077 != 0 {
-		fmt.Fprintf(os.Stderr, "{\"warn\":\"config file %s has overly permissive mode %04o, recommend 0600\"}\n", path, perm)
+		slog.Warn("config file has overly permissive mode", "path", path, "mode", fmt.Sprintf("%04o", perm))
 	}
 }

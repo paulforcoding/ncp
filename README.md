@@ -10,7 +10,7 @@ ncp copies files to remote servers and cloud object storage with DB-backed progr
 - **DB-backed progress** — Every file's copy/checksum status is persisted to PebbleDB. Interrupt at any time; resume picks up exactly where you left off.
 - **High performance** — DB-tracked resume with minimal overhead; batched writes and delayed flush to avoid impacting copy throughput.
 - **Unique workflow** — Supports both copy-then-verify and verify-then-incremental-copy patterns, enabling efficient data synchronization.
-- **Agent-First output** — Structured NDJSON FileLog events (`copy_plan`, `file_complete`, `progress_summary`) designed for programmatic consumption by agents and scripts.
+- **Agent-First output** — Structured NDJSON FileLog events (`file_complete`, `file_metadata_complete`, `progress_summary`) designed for programmatic consumption by agents and scripts.
 - **Multiple backends** — Local filesystem, remote ncp server (`ncp://`), Alibaba Cloud OSS (`oss://`).
 - **Checksum verification** — Independent `ncp cksum` command with MD5 or xxHash algorithms. Supports copy→cksum→copy cycles.
 
@@ -262,20 +262,9 @@ All events are NDJSON (one JSON object per line). Every event contains:
 
 ### Event Types
 
-#### `copy_plan` — emitted once at job start
+#### `file_complete` — content-level event, emitted per regular file after batch flush
 
-```json
-{
-  "timestamp": "2026-05-03T14:30:00.123456789Z",
-  "event": "copy_plan",
-  "taskId": "task-20260502-143000-abcd",
-  "sources": ["/data/project"],
-  "dest": "/backup/project",
-  "algorithm": "md5"
-}
-```
-
-#### `file_complete` — emitted per file after batch flush
+Reports the result of **content copy** (write data + close file) for regular files. One event per file.
 
 Copy mode:
 
@@ -295,8 +284,8 @@ Copy mode:
 }
 ```
 
-- `result`: `"done"` or `"error"`. When `"error"`, `errorCode` contains the error message.
-- `skipped`: present and `true` when the file was skipped by mtime/size/ETag match (only if `--skip-by-mtime` is enabled, which is the default).
+- `result`: `"done"`, `"error"`, or `"skipped"`. `"skipped"` means the file was skipped by mtime/size/ETag match.
+- `checksum`: hex string of the in-stream checksum (content copy only).
 
 Checksum mode:
 
@@ -319,6 +308,26 @@ Checksum mode:
 ```
 
 - `result`: `"done"` (pass) or `"error"` (mismatch/error). `srcHash` and `dstHash` are populated for regular files.
+
+#### `file_metadata_complete` — metadata-level event, emitted per file after batch flush
+
+Reports the result of **metadata operations** (Mkdir / Symlink / SetMetadata) for all file types. One event per file.
+
+```json
+{
+  "timestamp": "2026-05-03T14:30:01.234567890Z",
+  "event": "file_metadata_complete",
+  "taskId": "task-20260502-143000-abcd",
+  "result": "done",
+  "errorCode": "",
+  "relPath": "src/main.go",
+  "fileType": "regular"
+}
+```
+
+- Dirs and symlinks **only** emit this event (no `file_complete`).
+- Regular files emit both `file_complete` (content) and `file_metadata_complete` (metadata).
+- `result`: `"done"` or `"error"`.
 
 #### `progress_summary` — emitted periodically (controlled by `--FileLogInterval`)
 

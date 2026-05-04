@@ -75,7 +75,7 @@ func TestNewEmitterFile(t *testing.T) {
 		t.Fatalf("new emitter: %v", err)
 	}
 
-	e.Emit(EventCopyPlan, map[string]any{"src": "/data"})
+	e.Emit(EventFileComplete, map[string]any{"src": "/data"})
 
 	if err := e.Close(); err != nil {
 		t.Fatalf("close: %v", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -44,7 +45,7 @@ func (r *Replicator) Run(ctx context.Context, discoverCh <-chan model.DiscoverIt
 	}
 	if f, ok := r.dst.(storage.TaskFinalizer); ok {
 		if err := f.Done(); err != nil {
-			fmt.Fprintf(os.Stderr, "replicator %d: task finalize: %v\n", r.id, err)
+			slog.Error("replicator task finalize failed", "replicatorId", r.id, "error", err)
 		}
 	}
 }
@@ -89,12 +90,13 @@ func (r *Replicator) copyDir(ctx context.Context, item model.DiscoverItem) model
 		status = model.CopyError
 	}
 	return model.FileResult{
-		RelPath:    item.RelPath,
-		FileType:   item.FileType,
-		FileSize:   0,
-		CopyStatus: status,
-		Algorithm:  string(r.cksumAlgo),
-		Err:        err,
+		RelPath:     item.RelPath,
+		FileType:    item.FileType,
+		FileSize:    0,
+		CopyStatus:  status,
+		Algorithm:   string(r.cksumAlgo),
+		Err:         err,
+		MetadataErr: err,
 	}
 }
 
@@ -115,12 +117,13 @@ func (r *Replicator) copySymlink(ctx context.Context, item model.DiscoverItem) m
 		status = model.CopyError
 	}
 	return model.FileResult{
-		RelPath:    item.RelPath,
-		FileType:   item.FileType,
-		FileSize:   0,
-		CopyStatus: status,
-		Algorithm:  string(r.cksumAlgo),
-		Err:        err,
+		RelPath:     item.RelPath,
+		FileType:    item.FileType,
+		FileSize:    0,
+		CopyStatus:  status,
+		Algorithm:   string(r.cksumAlgo),
+		Err:         err,
+		MetadataErr: err,
 	}
 }
 
@@ -204,21 +207,23 @@ func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) mode
 		}
 	}
 
+	checksumHex := fmt.Sprintf("%x", checksumBytes)
+
 	// Preserve file mtime
 	if item.Mtime != 0 {
 		if err := r.dst.SetMetadata(ctx, item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
 			return model.FileResult{
-				RelPath:    item.RelPath,
-				FileType:   item.FileType,
-				FileSize:   item.FileSize,
-				CopyStatus: model.CopyError,
-				Algorithm:  string(r.cksumAlgo),
-				Err:        err,
+				RelPath:     item.RelPath,
+				FileType:    item.FileType,
+				FileSize:    item.FileSize,
+				CopyStatus:  model.CopyError,
+				Checksum:    checksumHex,
+				Algorithm:   string(r.cksumAlgo),
+				Err:         err,
+				MetadataErr: err,
 			}
 		}
 	}
-
-	checksumHex := fmt.Sprintf("%x", checksumBytes)
 
 	return model.FileResult{
 		RelPath:    item.RelPath,

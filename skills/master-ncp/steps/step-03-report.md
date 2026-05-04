@@ -21,7 +21,7 @@ grep '"progress_summary"' /tmp/ncp_file_log.json | tail -1 | jq '.'
 同时提取 taskID：
 
 ```bash
-head -1 /tmp/ncp_file_log.json | jq -r '.taskId'
+ls -t /tmp/ncp_progress_store | head -1
 ```
 
 ## 3.2 展示报告
