@@ -29,12 +29,16 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 
 	if f.Type == protocol.MsgError {
 		emsg := &protocol.ErrorMsg{}
-		emsg.Decode(f.Payload)
+		if derr := emsg.Decode(f.Payload); derr != nil {
+			return 0, fmt.Errorf("remote pread error (undecodable): %w", derr)
+		}
 		return 0, fmt.Errorf("remote pread error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
 	}
 
 	dataMsg := &protocol.DataMsg{}
-	dataMsg.Decode(f.Payload)
+	if err := dataMsg.Decode(f.Payload); err != nil {
+		return 0, fmt.Errorf("remote pread decode: %w", err)
+	}
 
 	n := copy(p, dataMsg.Data)
 	if n == 0 {
@@ -47,6 +51,6 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 func (r *Reader) Close() error {
 	msg := &protocol.CloseMsg{FD: r.fd}
 	// Best-effort close — ignore error since connection is going away
-	r.conn.SendMsgRecvAck(protocol.MsgClose, msg.Encode())
+	_, _ = r.conn.SendMsgRecvAck(protocol.MsgClose, msg.Encode())
 	return r.conn.Close()
 }
