@@ -76,7 +76,7 @@ func (d *Destination) Symlink(_ context.Context, relPath string, target string) 
 		return fmt.Errorf("local mkdirall for symlink %s: %w", relPath, err)
 	}
 
-	os.Remove(fullPath)
+	_ = os.Remove(fullPath)
 
 	if err := os.Symlink(target, fullPath); err != nil {
 		return fmt.Errorf("local symlink %s -> %s: %w", relPath, target, err)

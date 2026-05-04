@@ -55,15 +55,17 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 	}
 	initMsg := &protocol.InitMsg{}
 	if err := initMsg.Decode(frame.Payload); err != nil {
-		conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
+		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
 		return fmt.Errorf("decode init: %w", err)
 	}
 	h.basePath = initMsg.BasePath
 	if err := os.MkdirAll(h.basePath, 0o755); err != nil {
-		conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error()))
+		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error()))
 		return err
 	}
-	conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode())
+	if err := conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()); err != nil {
+		return err
+	}
 
 	// 2. Message loop
 	for {
@@ -95,7 +97,9 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgTaskDone:
 			respType = protocol.MsgAck
 			respPayload = (&protocol.AckMsg{ResultCode: 0}).Encode()
-			conn.Send(respType, respPayload)
+			if err := conn.Send(respType, respPayload); err != nil {
+				return err
+			}
 			return nil
 		case protocol.MsgList:
 			respType, respPayload = h.handleList(frame)
@@ -186,7 +190,9 @@ func (h *ConnHandler) handlePwrite(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleFsync(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.FsyncMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	of, ok := h.fdWriteMap[msg.FD]
 	if !ok {
@@ -202,7 +208,9 @@ func (h *ConnHandler) handleFsync(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleClose(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.CloseMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	if of, ok := h.fdWriteMap[msg.FD]; ok {
 		serverMD5 := of.md5.Sum(nil)
@@ -227,7 +235,9 @@ func (h *ConnHandler) handleClose(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleMkdir(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.MkdirMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	fullPath := h.fullPath(msg.Path)
 	if err := os.MkdirAll(fullPath, os.FileMode(msg.Mode)); err != nil {
@@ -239,13 +249,15 @@ func (h *ConnHandler) handleMkdir(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleSymlink(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.SymlinkMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	linkPath := h.fullPath(msg.LinkPath)
 	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
 	}
-	os.Remove(linkPath)
+	_ = os.Remove(linkPath)
 	if err := os.Symlink(msg.Target, linkPath); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileSymlink, err.Error())
 	}
@@ -255,7 +267,9 @@ func (h *ConnHandler) handleSymlink(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleUtime(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.UtimeMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	fullPath := h.fullPath(msg.Path)
 	if err := os.Chtimes(fullPath, time.Unix(0, msg.Atime), time.Unix(0, msg.Mtime)); err != nil {
@@ -267,7 +281,9 @@ func (h *ConnHandler) handleUtime(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleSetxattr(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.SetxattrMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	fullPath := h.fullPath(msg.Path)
 	if err := setXattr(fullPath, msg.Key, msg.Value); err != nil {
@@ -283,7 +299,9 @@ const listPageSize = 1000
 
 func (h *ConnHandler) handleList(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.ListMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	// Populate walk entries on first request (token == "")
 	if msg.ContinuationToken == "" && !h.walkDone {
@@ -327,7 +345,9 @@ func (h *ConnHandler) handleList(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handlePread(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.PreadMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	f, ok := h.fdReadMap[msg.FD]
 	if !ok {
@@ -350,7 +370,9 @@ func (h *ConnHandler) handlePread(frame *protocol.Frame) (uint8, []byte) {
 
 func (h *ConnHandler) handleStat(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.StatMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	fullPath := h.fullPath(msg.RelPath)
 	info, err := os.Lstat(fullPath)

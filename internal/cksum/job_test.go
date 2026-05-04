@@ -64,8 +64,12 @@ func TestCksumJobRunPass(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file1.txt"), []byte("hello"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write src file1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write dst file1: %v", err)
+	}
 
 	src, err := local.NewSource(srcDir)
 	if err != nil {
@@ -77,7 +81,9 @@ func TestCksumJobRunPass(t *testing.T) {
 	}
 
 	storeDir := filepath.Join(t.TempDir(), "progress")
-	os.MkdirAll(storeDir, 0o755)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir storeDir: %v", err)
+	}
 	store := &pebble.Store{}
 	if err := store.Open(storeDir); err != nil {
 		t.Fatalf("open store: %v", err)
@@ -99,14 +105,20 @@ func TestCksumJobRunMismatch(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file1.txt"), []byte("world"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write src file1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file1.txt"), []byte("world"), 0o644); err != nil {
+		t.Fatalf("write dst file1: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
 
 	storeDir := filepath.Join(t.TempDir(), "progress")
-	os.MkdirAll(storeDir, 0o755)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir storeDir: %v", err)
+	}
 	store := &pebble.Store{}
 	if err := store.Open(storeDir); err != nil {
 		t.Fatalf("open store: %v", err)
@@ -128,13 +140,17 @@ func TestCksumJobRunMissingDst(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write src file1: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
 
 	storeDir := filepath.Join(t.TempDir(), "progress")
-	os.MkdirAll(storeDir, 0o755)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir storeDir: %v", err)
+	}
 	store := &pebble.Store{}
 	if err := store.Open(storeDir); err != nil {
 		t.Fatalf("open store: %v", err)

@@ -22,8 +22,12 @@ func TestCksumWorkerCksumDirPass(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755)
-	os.MkdirAll(filepath.Join(dstDir, "subdir"), 0o755)
+	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dstDir, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -40,8 +44,12 @@ func TestCksumWorkerCksumDirMismatch(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755)
-	os.WriteFile(filepath.Join(dstDir, "subdir"), []byte("not a dir"), 0o644)
+	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "subdir"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("write dst subdir: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -58,8 +66,12 @@ func TestCksumWorkerCksumSymlinkPass(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.Symlink("target.txt", filepath.Join(srcDir, "link"))
-	os.Symlink("target.txt", filepath.Join(dstDir, "link"))
+	if err := os.Symlink("target.txt", filepath.Join(srcDir, "link")); err != nil {
+		t.Fatalf("symlink src: %v", err)
+	}
+	if err := os.Symlink("target.txt", filepath.Join(dstDir, "link")); err != nil {
+		t.Fatalf("symlink dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -76,8 +88,12 @@ func TestCksumWorkerCksumSymlinkMismatch(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.Symlink("target-a.txt", filepath.Join(srcDir, "link"))
-	os.Symlink("target-b.txt", filepath.Join(dstDir, "link"))
+	if err := os.Symlink("target-a.txt", filepath.Join(srcDir, "link")); err != nil {
+		t.Fatalf("symlink src: %v", err)
+	}
+	if err := os.Symlink("target-b.txt", filepath.Join(dstDir, "link")); err != nil {
+		t.Fatalf("symlink dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -94,8 +110,12 @@ func TestCksumWorkerCksumFilePass(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("same content"), 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("same content"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("same content"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("same content"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -118,8 +138,12 @@ func TestCksumWorkerCksumFileMismatch(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("content-a"), 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content-b"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("content-a"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content-b"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -139,7 +163,9 @@ func TestCksumWorkerCksumFileSrcMissing(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content"), 0o644)
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)
@@ -159,12 +185,20 @@ func TestCksumWorkerSkipByMtime(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("content"), 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
 	// Ensure identical mtime for skip-by-mtime to trigger
 	now := time.Now().Truncate(time.Second)
-	os.Chtimes(filepath.Join(srcDir, "file.txt"), now, now)
-	os.Chtimes(filepath.Join(dstDir, "file.txt"), now, now)
+	if err := os.Chtimes(filepath.Join(srcDir, "file.txt"), now, now); err != nil {
+		t.Fatalf("chtimes src: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dstDir, "file.txt"), now, now); err != nil {
+		t.Fatalf("chtimes dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewSource(dstDir)

@@ -47,7 +47,7 @@ func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase st
 			continue
 		}
 		dstPath := filepath.Join(dstBase, relPath)
-		setFileMtime(dstPath, srcInfo.ModTime())
+		_ = setFileMtime(dstPath, srcInfo.ModTime())
 	}
 
 	return nil

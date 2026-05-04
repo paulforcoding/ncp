@@ -76,24 +76,24 @@ func main() {
 	copyCmd.Flags().Int("ChannelBuf", 100000, "Channel buffer size for discover/result queues")
 
 	// Bind all flags to Viper
-	v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
-	v.BindPFlag("ProgramLogLevel", copyCmd.Flags().Lookup("ProgramLogLevel"))
-	v.BindPFlag("ProgramLogOutput", copyCmd.Flags().Lookup("ProgramLogOutput"))
-	v.BindPFlag("FileLogEnabled", copyCmd.Flags().Lookup("enable-FileLog"))
-	v.BindPFlag("FileLogOutput", copyCmd.Flags().Lookup("FileLogOutput"))
-	v.BindPFlag("FileLogInterval", copyCmd.Flags().Lookup("FileLogInterval"))
-	v.BindPFlag("DirectIO", copyCmd.Flags().Lookup("enable-DirectIO"))
-	v.BindPFlag("SyncWrites", copyCmd.Flags().Lookup("enable-SyncWrites"))
-	v.BindPFlag("IOSize", copyCmd.Flags().Lookup("IOSize"))
-	v.BindPFlag("EnsureDirMtime", copyCmd.Flags().Lookup("enable-EnsureDirMtime"))
-	v.BindPFlag("ProgressStorePath", copyCmd.Flags().Lookup("ProgressStorePath"))
-	v.BindPFlag("OSSEndpoint", copyCmd.Flags().Lookup("endpoint"))
-	v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
-	v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
-	v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
-	v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
-	v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
-	v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
+	_ = v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
+	_ = v.BindPFlag("ProgramLogLevel", copyCmd.Flags().Lookup("ProgramLogLevel"))
+	_ = v.BindPFlag("ProgramLogOutput", copyCmd.Flags().Lookup("ProgramLogOutput"))
+	_ = v.BindPFlag("FileLogEnabled", copyCmd.Flags().Lookup("enable-FileLog"))
+	_ = v.BindPFlag("FileLogOutput", copyCmd.Flags().Lookup("FileLogOutput"))
+	_ = v.BindPFlag("FileLogInterval", copyCmd.Flags().Lookup("FileLogInterval"))
+	_ = v.BindPFlag("DirectIO", copyCmd.Flags().Lookup("enable-DirectIO"))
+	_ = v.BindPFlag("SyncWrites", copyCmd.Flags().Lookup("enable-SyncWrites"))
+	_ = v.BindPFlag("IOSize", copyCmd.Flags().Lookup("IOSize"))
+	_ = v.BindPFlag("EnsureDirMtime", copyCmd.Flags().Lookup("enable-EnsureDirMtime"))
+	_ = v.BindPFlag("ProgressStorePath", copyCmd.Flags().Lookup("ProgressStorePath"))
+	_ = v.BindPFlag("OSSEndpoint", copyCmd.Flags().Lookup("endpoint"))
+	_ = v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
+	_ = v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
+	_ = v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
+	_ = v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
+	_ = v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
+	_ = v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -286,7 +286,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	exitCode, err := job.Run(ctx)
 
 	// Update meta.json
-	task.UpdateRunFinished(meta, exitCode, progressDir)
+	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
@@ -305,7 +305,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		return err
 	}
 	if lock != nil {
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 
 	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
@@ -351,7 +351,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 	exitCode, err := job.Run(ctx)
 
-	task.UpdateRunFinished(meta, exitCode, progressDir)
+	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
@@ -372,7 +372,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if lock != nil {
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 
 	jobType := task.LastJobType(meta)
@@ -410,7 +410,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		exitCode, runErr = runResumeCopy(cfg, meta, fl, taskID, progressDir, ctx)
 	}
 
-	task.UpdateRunFinished(meta, exitCode, progressDir)
+	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", runErr.Error(), taskID, exitCode)
@@ -470,19 +470,19 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "FileLogEnabled", "enable-FileLog", "disable-FileLog")
 
 	// Bind cksum flags to Viper
-	v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
-	v.BindPFlag("ProgramLogLevel", cmd.Flags().Lookup("ProgramLogLevel"))
-	v.BindPFlag("ProgramLogOutput", cmd.Flags().Lookup("ProgramLogOutput"))
-	v.BindPFlag("FileLogEnabled", cmd.Flags().Lookup("enable-FileLog"))
-	v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
-	v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
-	v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
-	v.BindPFlag("OSSEndpoint", cmd.Flags().Lookup("endpoint"))
-	v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
-	v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
-	v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
-	v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
-	v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
+	_ = v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
+	_ = v.BindPFlag("ProgramLogLevel", cmd.Flags().Lookup("ProgramLogLevel"))
+	_ = v.BindPFlag("ProgramLogOutput", cmd.Flags().Lookup("ProgramLogOutput"))
+	_ = v.BindPFlag("FileLogEnabled", cmd.Flags().Lookup("enable-FileLog"))
+	_ = v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
+	_ = v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
+	_ = v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
+	_ = v.BindPFlag("OSSEndpoint", cmd.Flags().Lookup("endpoint"))
+	_ = v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
+	_ = v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
+	_ = v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
+	_ = v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
+	_ = v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
 
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
@@ -550,7 +550,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 
 	exitCode, err := job.Run(ctx)
 
-	task.UpdateRunFinished(meta, exitCode, progressDir)
+	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
@@ -568,7 +568,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		return err
 	}
 	if lock != nil {
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 
 	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
@@ -607,7 +607,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 	exitCode, err := job.Run(ctx)
 
-	task.UpdateRunFinished(meta, exitCode, progressDir)
+	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
@@ -725,7 +725,7 @@ func runTaskDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot delete: %w", err)
 	}
 	if lock != nil {
-		lock.Release()
+		_ = lock.Release()
 	}
 
 	dir := task.TaskDir(progressDir, taskID)
@@ -833,14 +833,14 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 // loadResumeConfig loads config from a resume/task command's Viper flags.
 func loadResumeConfig(cmd *cobra.Command) (*config.Config, error) {
 	// Bind resume-specific flags
-	v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
-	v.BindPFlag("ProgramLogLevel", cmd.Flags().Lookup("ProgramLogLevel"))
-	v.BindPFlag("ProgramLogOutput", cmd.Flags().Lookup("ProgramLogOutput"))
-	v.BindPFlag("FileLogEnabled", cmd.Flags().Lookup("enable-FileLog"))
-	v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
-	v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
-	v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
-	v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
+	_ = v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
+	_ = v.BindPFlag("ProgramLogLevel", cmd.Flags().Lookup("ProgramLogLevel"))
+	_ = v.BindPFlag("ProgramLogOutput", cmd.Flags().Lookup("ProgramLogOutput"))
+	_ = v.BindPFlag("FileLogEnabled", cmd.Flags().Lookup("enable-FileLog"))
+	_ = v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
+	_ = v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
+	_ = v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
+	_ = v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
 
 	return config.LoadFromViper(v)
 }
