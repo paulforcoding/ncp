@@ -22,12 +22,16 @@ func TestAcquireTaskLock(t *testing.T) {
 	}
 
 	// Release and re-acquire should succeed
-	lock.Release()
+	if err := lock.Release(); err != nil {
+		t.Fatalf("release lock: %v", err)
+	}
 	lock2, err := AcquireTaskLock(dir)
 	if err != nil {
 		t.Fatalf("re-acquire lock after release: %v", err)
 	}
-	lock2.Release()
+	if err := lock2.Release(); err != nil {
+		t.Fatalf("release lock2: %v", err)
+	}
 }
 
 func TestIsProcessAlive(t *testing.T) {
@@ -58,7 +62,9 @@ func TestCheckTaskNotRunning(t *testing.T) {
 	// Create a meta for a task
 	meta := NewMeta("task-lock-test", "/src", "/dst", nil, JobTypeCopy)
 	meta.PID = os.Getpid()
-	WriteMetaTo(meta, dir)
+	if err := WriteMetaTo(meta, dir); err != nil {
+		t.Fatalf("write meta (alive pid): %v", err)
+	}
 
 	// Task with our own PID should be detected as running
 	_, _, err := CheckTaskNotRunning(dir, "task-lock-test")
@@ -68,7 +74,9 @@ func TestCheckTaskNotRunning(t *testing.T) {
 
 	// Set PID to a dead process
 	meta.PID = 999999
-	WriteMetaTo(meta, dir)
+	if err := WriteMetaTo(meta, dir); err != nil {
+		t.Fatalf("write meta (dead pid): %v", err)
+	}
 
 	// Now it should succeed
 	_, lock, err := CheckTaskNotRunning(dir, "task-lock-test")
@@ -76,7 +84,9 @@ func TestCheckTaskNotRunning(t *testing.T) {
 		t.Fatalf("expected success for dead PID: %v", err)
 	}
 	if lock != nil {
-		lock.Release()
+		if err := lock.Release(); err != nil {
+			t.Fatalf("release lock: %v", err)
+		}
 	}
 }
 

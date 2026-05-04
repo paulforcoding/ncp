@@ -58,7 +58,9 @@ func TestEmitterMapData(t *testing.T) {
 	})
 
 	var entry map[string]any
-	json.Unmarshal(buf.Bytes(), &entry)
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, buf.String())
+	}
 	if entry["phase"] != "copy" {
 		t.Fatalf("expected copy, got %v", entry["phase"])
 	}

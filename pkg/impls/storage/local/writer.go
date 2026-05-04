@@ -47,10 +47,15 @@ func (w *Writer) Sync() error {
 // Close closes the file. SyncWrites triggers a final fsync before close.
 // The checksum parameter is ignored for local copies.
 func (w *Writer) Close(_ context.Context, _ []byte) error {
+	var syncErr error
 	if w.cfg.SyncWrites {
-		w.f.Sync()
+		syncErr = w.f.Sync()
 	}
-	return w.f.Close()
+	closeErr := w.f.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 // Fd returns the underlying file descriptor.

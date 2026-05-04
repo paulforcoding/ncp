@@ -15,7 +15,9 @@ func TestReplicatorCopyDir(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755)
+	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
@@ -36,8 +38,12 @@ func TestReplicatorCopySymlink(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("data"), 0o644)
-	os.Symlink("target.txt", filepath.Join(srcDir, "link"))
+	if err := os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink("target.txt", filepath.Join(srcDir, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
@@ -63,7 +69,9 @@ func TestReplicatorCopyFile(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello world"), 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
@@ -150,7 +158,9 @@ func TestReplicatorCopyFileWithChecksum(t *testing.T) {
 	dstDir := t.TempDir()
 
 	content := []byte("test content for checksum")
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), content, 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), content, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
@@ -175,12 +185,20 @@ func TestReplicatorSkipByMtime(t *testing.T) {
 	dstDir := t.TempDir()
 
 	content := []byte("same content")
-	os.WriteFile(filepath.Join(srcDir, "file.txt"), content, 0o644)
-	os.WriteFile(filepath.Join(dstDir, "file.txt"), content, 0o644)
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), content, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), content, 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
 	// Ensure identical mtime for skip-by-mtime to trigger
 	now := time.Now().Truncate(time.Second)
-	os.Chtimes(filepath.Join(srcDir, "file.txt"), now, now)
-	os.Chtimes(filepath.Join(dstDir, "file.txt"), now, now)
+	if err := os.Chtimes(filepath.Join(srcDir, "file.txt"), now, now); err != nil {
+		t.Fatalf("chtimes src: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dstDir, "file.txt"), now, now); err != nil {
+		t.Fatalf("chtimes dst: %v", err)
+	}
 
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)

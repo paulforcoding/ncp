@@ -14,14 +14,22 @@ func createTestTree(t *testing.T) string {
 	root := t.TempDir()
 
 	// dir1/file1.txt
-	os.MkdirAll(filepath.Join(root, "dir1"), 0o755)
-	os.WriteFile(filepath.Join(root, "dir1", "file1.txt"), []byte("hello"), 0o644)
+	if err := os.MkdirAll(filepath.Join(root, "dir1"), 0o755); err != nil {
+		t.Fatalf("mkdir dir1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir1", "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file1: %v", err)
+	}
 
 	// file2.txt
-	os.WriteFile(filepath.Join(root, "file2.txt"), []byte("world"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "file2.txt"), []byte("world"), 0o644); err != nil {
+		t.Fatalf("write file2: %v", err)
+	}
 
 	// symlink → file2.txt
-	os.Symlink("file2.txt", filepath.Join(root, "link"))
+	if err := os.Symlink("file2.txt", filepath.Join(root, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
 
 	return root
 }
@@ -70,10 +78,12 @@ func TestWalkDFSOrder(t *testing.T) {
 	}
 
 	var paths []string
-	src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
 		paths = append(paths, item.RelPath)
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
 
 	// filepath.Walk is DFS: parent before child
 	for i, p := range paths {
@@ -86,7 +96,9 @@ func TestWalkDFSOrder(t *testing.T) {
 
 func TestWalkSkipSpecial(t *testing.T) {
 	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "normal.txt"), []byte("ok"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "normal.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write normal: %v", err)
+	}
 
 	src, err := NewSource(root)
 	if err != nil {
@@ -94,10 +106,12 @@ func TestWalkSkipSpecial(t *testing.T) {
 	}
 
 	var count int
-	src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
 		count++
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
 
 	// Only normal.txt (root dir skipped)
 	if count != 1 {
@@ -136,10 +150,12 @@ func TestRelPathFormat(t *testing.T) {
 	}
 
 	var paths []string
-	src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
 		paths = append(paths, item.RelPath)
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
 
 	for _, p := range paths {
 		if p == "" {

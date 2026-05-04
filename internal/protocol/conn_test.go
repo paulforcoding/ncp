@@ -26,7 +26,7 @@ func TestClientServer_RoundTrip(t *testing.T) {
 	}
 
 	srv := NewServer(ln, handler)
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 	defer srv.Close()
 
 	conn, err := Dial(ln.Addr().String())
@@ -70,24 +70,36 @@ func TestClientServer_MultipleMessages(t *testing.T) {
 				switch f.Type {
 				case MsgOpen:
 					msg := &OpenMsg{}
-					msg.Decode(f.Payload)
-					conn.Send(MsgAck, EncodeAckFD(0, 1))
+					if err := msg.Decode(f.Payload); err != nil {
+						return err
+					}
+					if err := conn.Send(MsgAck, EncodeAckFD(0, 1)); err != nil {
+						return err
+					}
 				case MsgPwrite:
-					conn.Send(MsgAck, EncodeAckU32(0, 4096))
+					if err := conn.Send(MsgAck, EncodeAckU32(0, 4096)); err != nil {
+						return err
+					}
 				case MsgClose:
-					conn.Send(MsgAck, (&AckMsg{ResultCode: 0}).Encode())
+					if err := conn.Send(MsgAck, (&AckMsg{ResultCode: 0}).Encode()); err != nil {
+						return err
+					}
 				case MsgTaskDone:
-					conn.Send(MsgAck, (&AckMsg{ResultCode: 0}).Encode())
+					if err := conn.Send(MsgAck, (&AckMsg{ResultCode: 0}).Encode()); err != nil {
+						return err
+					}
 					return nil
 				default:
-					conn.Send(MsgError, EncodeError(0x2001, "unknown message"))
+					if err := conn.Send(MsgError, EncodeError(0x2001, "unknown message")); err != nil {
+						return err
+					}
 				}
 			}
 		})
 	}
 
 	srv := NewServer(ln, handler)
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 	defer srv.Close()
 
 	conn, err := Dial(ln.Addr().String())
@@ -145,7 +157,7 @@ func TestClientServer_ErrorResponse(t *testing.T) {
 	}
 
 	srv := NewServer(ln, handler)
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 	defer srv.Close()
 
 	conn, err := Dial(ln.Addr().String())
@@ -180,7 +192,7 @@ func TestServer_MultipleConnections(t *testing.T) {
 	}
 
 	srv := NewServer(ln, handler)
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 	defer srv.Close()
 
 	for i := 0; i < 3; i++ {

@@ -43,7 +43,9 @@ func (r *Replicator) Run(ctx context.Context, discoverCh <-chan model.DiscoverIt
 		resultCh <- result
 	}
 	if f, ok := r.dst.(storage.TaskFinalizer); ok {
-		f.Done()
+		if err := f.Done(); err != nil {
+			fmt.Fprintf(os.Stderr, "replicator %d: task finalize: %v\n", r.id, err)
+		}
 	}
 }
 

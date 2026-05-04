@@ -84,7 +84,9 @@ func TestFsyncMsg_Roundtrip(t *testing.T) {
 	m := &FsyncMsg{FD: 5}
 	data := m.Encode()
 	m2 := &FsyncMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.FD != m.FD {
 		t.Fatalf("fd mismatch: got %d, want %d", m2.FD, m.FD)
 	}
@@ -96,7 +98,9 @@ func TestCloseMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &CloseMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.FD != m.FD {
 		t.Fatalf("fd mismatch: got %d, want %d", m2.FD, m.FD)
 	}
@@ -110,7 +114,9 @@ func TestMkdirMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &MkdirMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.Path != m.Path {
 		t.Fatalf("path mismatch: got %q, want %q", m2.Path, m.Path)
 	}
@@ -124,7 +130,9 @@ func TestSymlinkMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &SymlinkMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.Target != m.Target {
 		t.Fatalf("target mismatch: got %q, want %q", m2.Target, m.Target)
 	}
@@ -138,7 +146,9 @@ func TestUtimeMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &UtimeMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.Path != m.Path {
 		t.Fatalf("path mismatch")
 	}
@@ -155,7 +165,9 @@ func TestSetxattrMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &SetxattrMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.Path != m.Path {
 		t.Fatalf("path mismatch")
 	}
@@ -174,7 +186,9 @@ func TestTaskDoneMsg_Roundtrip(t *testing.T) {
 		t.Fatalf("expected empty payload, got %d bytes", len(data))
 	}
 	m2 := &TaskDoneMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 }
 
 func TestAckMsg_Roundtrip(t *testing.T) {
@@ -182,7 +196,9 @@ func TestAckMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &AckMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.ResultCode != m.ResultCode {
 		t.Fatalf("resultcode mismatch: got %d, want %d", m2.ResultCode, m.ResultCode)
 	}
@@ -196,7 +212,9 @@ func TestErrorMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &ErrorMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.Code != m.Code {
 		t.Fatalf("code mismatch: got %d, want %d", m2.Code, m.Code)
 	}
@@ -209,7 +227,9 @@ func TestEncodeAckFD(t *testing.T) {
 	data := EncodeAckFD(0, 42)
 	// Decode the full AckMsg first, then extract fd from Data
 	ack := &AckMsg{}
-	ack.Decode(data)
+	if err := ack.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	_, fd := DecodeAckFD(ack.Data)
 	if fd != 42 {
 		t.Fatalf("fd mismatch: got %d, want 42", fd)
@@ -219,7 +239,9 @@ func TestEncodeAckFD(t *testing.T) {
 func TestEncodeError(t *testing.T) {
 	data := EncodeError(0x1007, "checksum mismatch")
 	m := &ErrorMsg{}
-	m.Decode(data)
+	if err := m.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m.Code != 0x1007 {
 		t.Fatalf("code mismatch: got %d", m.Code)
 	}
@@ -248,7 +270,9 @@ func TestInitMsg_EmptyBasePath(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &InitMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.BasePath != "" {
 		t.Fatalf("expected empty basePath, got %q", m2.BasePath)
 	}
@@ -259,7 +283,9 @@ func TestListMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &ListMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.ContinuationToken != m.ContinuationToken {
 		t.Fatalf("token mismatch: got %q, want %q", m2.ContinuationToken, m.ContinuationToken)
 	}
@@ -270,7 +296,9 @@ func TestListMsg_EmptyToken(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &ListMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.ContinuationToken != "" {
 		t.Fatalf("expected empty token, got %q", m2.ContinuationToken)
 	}
@@ -281,7 +309,9 @@ func TestPreadMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &PreadMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.FD != m.FD {
 		t.Fatalf("fd mismatch: got %d, want %d", m2.FD, m.FD)
 	}
@@ -298,7 +328,9 @@ func TestStatMsg_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &StatMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.RelPath != m.RelPath {
 		t.Fatalf("relpath mismatch: got %q, want %q", m2.RelPath, m.RelPath)
 	}
@@ -317,7 +349,9 @@ func TestListEntry_Roundtrip(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &ListEntry{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.RelPath != m.RelPath {
 		t.Fatalf("relpath mismatch: got %q, want %q", m2.RelPath, m.RelPath)
 	}
@@ -351,7 +385,9 @@ func TestListEntry_Symlink(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &ListEntry{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.LinkTarget != m.LinkTarget {
 		t.Fatalf("linktarget mismatch: got %q, want %q", m2.LinkTarget, m.LinkTarget)
 	}
@@ -370,7 +406,9 @@ func TestDataMsg_WithEntries(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &DataMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if m2.ResultCode != m.ResultCode {
 		t.Fatalf("resultcode mismatch: got %d, want %d", m2.ResultCode, m.ResultCode)
 	}
@@ -399,7 +437,9 @@ func TestDataMsg_WithData(t *testing.T) {
 	data := m.Encode()
 
 	m2 := &DataMsg{}
-	m2.Decode(data)
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if !bytes.Equal(m2.Data, payload) {
 		t.Fatalf("data mismatch: got %q, want %q", string(m2.Data), string(payload))
 	}
