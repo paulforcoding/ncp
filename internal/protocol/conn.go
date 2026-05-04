@@ -60,13 +60,17 @@ func (c *Conn) SendMsgRecvAck(msgType uint8, payload []byte) (*AckMsg, error) {
 	case MsgAck:
 		ack := &AckMsg{}
 		if len(f.Payload) > 0 {
-			ack.Decode(f.Payload)
+			if err := ack.Decode(f.Payload); err != nil {
+				return nil, fmt.Errorf("decode ack for msg 0x%02X: %w", msgType, err)
+			}
 		}
 		return ack, nil
 	case MsgError:
 		emsg := &ErrorMsg{}
 		if len(f.Payload) > 0 {
-			emsg.Decode(f.Payload)
+			if err := emsg.Decode(f.Payload); err != nil {
+				return nil, fmt.Errorf("decode server error for msg 0x%02X: %w", msgType, err)
+			}
 		}
 		return nil, fmt.Errorf("server error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
 	default:

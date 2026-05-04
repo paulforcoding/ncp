@@ -54,7 +54,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		return fmt.Errorf("expected MsgInit (0x0A), got 0x%02X", frame.Type)
 	}
 	initMsg := &protocol.InitMsg{}
-	initMsg.Decode(frame.Payload)
+	if err := initMsg.Decode(frame.Payload); err != nil {
+		conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
+		return fmt.Errorf("decode init: %w", err)
+	}
 	h.basePath = initMsg.BasePath
 	if err := os.MkdirAll(h.basePath, 0o755); err != nil {
 		conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error()))
@@ -120,7 +123,9 @@ func (h *ConnHandler) fullPath(relPath string) string {
 
 func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.OpenMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	if msg.Flags == 0 { // O_RDONLY
 		return h.handleOpenRead(msg)
@@ -160,7 +165,9 @@ func (h *ConnHandler) handleOpenRead(msg *protocol.OpenMsg) (uint8, []byte) {
 
 func (h *ConnHandler) handlePwrite(frame *protocol.Frame) (uint8, []byte) {
 	msg := &protocol.PwriteMsg{}
-	msg.Decode(frame.Payload)
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
 
 	of, ok := h.fdWriteMap[msg.FD]
 	if !ok {
@@ -291,7 +298,10 @@ func (h *ConnHandler) handleList(frame *protocol.Frame) (uint8, []byte) {
 	// Parse continuation token as offset
 	offset := 0
 	if msg.ContinuationToken != "" {
-		fmt.Sscanf(msg.ContinuationToken, "%d", &offset)
+		if _, err := fmt.Sscanf(msg.ContinuationToken, "%d", &offset); err != nil {
+			return protocol.MsgError, protocol.EncodeError(model.ErrProtocol,
+				fmt.Sprintf("bad continuation token %q: %v", msg.ContinuationToken, err))
+		}
 	}
 
 	end := offset + listPageSize

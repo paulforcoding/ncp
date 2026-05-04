@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 // Client → Server message types (0x0X)
@@ -567,7 +568,9 @@ func (m *DataMsg) Decode(data []byte) error {
 	for i := 0; i < entryCount; i++ {
 		entryLen := int(binary.BigEndian.Uint32(data[off:]))
 		off += 4
-		m.Entries[i].Decode(data[off : off+entryLen])
+		if err := m.Entries[i].Decode(data[off : off+entryLen]); err != nil {
+			return fmt.Errorf("decode entry %d: %w", i, err)
+		}
 		off += entryLen
 	}
 	tokenLen := int(binary.BigEndian.Uint16(data[off:]))

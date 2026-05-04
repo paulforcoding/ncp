@@ -59,12 +59,16 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 		}
 		if f.Type == protocol.MsgError {
 			emsg := &protocol.ErrorMsg{}
-			emsg.Decode(f.Payload)
+			if derr := emsg.Decode(f.Payload); derr != nil {
+				return fmt.Errorf("remote list error (undecodable): %w", derr)
+			}
 			return fmt.Errorf("remote list error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
 		}
 
 		dataMsg := &protocol.DataMsg{}
-		dataMsg.Decode(f.Payload)
+		if err := dataMsg.Decode(f.Payload); err != nil {
+			return fmt.Errorf("remote list decode: %w", err)
+		}
 
 		for i := range dataMsg.Entries {
 			item := listEntryToDiscoverItem(&dataMsg.Entries[i], s)
@@ -118,12 +122,16 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 	}
 	if f.Type == protocol.MsgError {
 		emsg := &protocol.ErrorMsg{}
-		emsg.Decode(f.Payload)
+		if derr := emsg.Decode(f.Payload); derr != nil {
+			return model.DiscoverItem{}, fmt.Errorf("remote stat error (undecodable): %w", derr)
+		}
 		return model.DiscoverItem{}, fmt.Errorf("remote stat error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
 	}
 
 	dataMsg := &protocol.DataMsg{}
-	dataMsg.Decode(f.Payload)
+	if err := dataMsg.Decode(f.Payload); err != nil {
+		return model.DiscoverItem{}, fmt.Errorf("remote stat decode: %w", err)
+	}
 
 	if len(dataMsg.Entries) == 0 {
 		return model.DiscoverItem{}, fmt.Errorf("remote stat %s: no entry returned", relPath)
