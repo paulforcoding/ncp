@@ -1,6 +1,7 @@
 package copy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -36,9 +37,9 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 }
 
 // Run consumes items from discoverCh and sends results to resultCh.
-func (r *Replicator) Run(discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) {
+func (r *Replicator) Run(ctx context.Context, discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) {
 	for item := range discoverCh {
-		result := r.copyOne(item)
+		result := r.copyOne(ctx, item)
 		resultCh <- result
 	}
 	if f, ok := r.dst.(storage.TaskFinalizer); ok {
@@ -46,9 +47,9 @@ func (r *Replicator) Run(discoverCh <-chan model.DiscoverItem, resultCh chan<- m
 	}
 }
 
-func (r *Replicator) copyOne(item model.DiscoverItem) model.FileResult {
+func (r *Replicator) copyOne(ctx context.Context, item model.DiscoverItem) model.FileResult {
 	if r.skipByMtime {
-		if skipped, _ := ShouldSkipCopy(r.dst, item); skipped {
+		if skipped, _ := ShouldSkipCopy(ctx, r.dst, item); skipped {
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,
@@ -62,11 +63,11 @@ func (r *Replicator) copyOne(item model.DiscoverItem) model.FileResult {
 
 	switch item.FileType {
 	case model.FileDir:
-		return r.copyDir(item)
+		return r.copyDir(ctx, item)
 	case model.FileSymlink:
-		return r.copySymlink(item)
+		return r.copySymlink(ctx, item)
 	case model.FileRegular:
-		return r.copyFile(item)
+		return r.copyFile(ctx, item)
 	default:
 		return model.FileResult{
 			RelPath:    item.RelPath,
@@ -79,8 +80,8 @@ func (r *Replicator) copyOne(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (r *Replicator) copyDir(item model.DiscoverItem) model.FileResult {
-	err := r.dst.Mkdir(item.RelPath, os.FileMode(item.Mode), item.Uid, item.Gid)
+func (r *Replicator) copyDir(ctx context.Context, item model.DiscoverItem) model.FileResult {
+	err := r.dst.Mkdir(ctx, item.RelPath, os.FileMode(item.Mode), item.Uid, item.Gid)
 	status := model.CopyDone
 	if err != nil {
 		status = model.CopyError
@@ -95,7 +96,7 @@ func (r *Replicator) copyDir(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (r *Replicator) copySymlink(item model.DiscoverItem) model.FileResult {
+func (r *Replicator) copySymlink(ctx context.Context, item model.DiscoverItem) model.FileResult {
 	if item.LinkTarget == "" {
 		return model.FileResult{
 			RelPath:    item.RelPath,
@@ -106,7 +107,7 @@ func (r *Replicator) copySymlink(item model.DiscoverItem) model.FileResult {
 			Err:        fmt.Errorf("symlink target empty for %s", item.RelPath),
 		}
 	}
-	err := r.dst.Symlink(item.RelPath, item.LinkTarget)
+	err := r.dst.Symlink(ctx, item.RelPath, item.LinkTarget)
 	status := model.CopyDone
 	if err != nil {
 		status = model.CopyError
@@ -121,7 +122,7 @@ func (r *Replicator) copySymlink(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
+func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) model.FileResult {
 	reader, err := r.src.Open(item.RelPath)
 	if err != nil {
 		return model.FileResult{
@@ -135,7 +136,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	}
 	defer reader.Close()
 
-	writer, err := r.dst.OpenFile(item.RelPath, item.FileSize, os.FileMode(item.Mode), item.Uid, item.Gid)
+	writer, err := r.dst.OpenFile(ctx, item.RelPath, item.FileSize, os.FileMode(item.Mode), item.Uid, item.Gid)
 	if err != nil {
 		return model.FileResult{
 			RelPath:    item.RelPath,
@@ -161,7 +162,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 			h.Write(buf[:n])
 			written, writeErr := writer.WriteAt(buf[:n], offset)
 			if writeErr != nil {
-				writer.Close(nil)
+				writer.Close(ctx, nil)
 				return model.FileResult{
 					RelPath:    item.RelPath,
 					FileType:   item.FileType,
@@ -177,7 +178,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 			break
 		}
 		if readErr != nil {
-			writer.Close(nil)
+			writer.Close(ctx, nil)
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,
@@ -190,7 +191,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 	}
 
 	checksumBytes := h.Sum(nil)
-	if err := writer.Close(checksumBytes); err != nil {
+	if err := writer.Close(ctx, checksumBytes); err != nil {
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
@@ -203,7 +204,7 @@ func (r *Replicator) copyFile(item model.DiscoverItem) model.FileResult {
 
 	// Preserve file mtime
 	if item.Mtime != 0 {
-		if err := r.dst.SetMetadata(item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
+		if err := r.dst.SetMetadata(ctx, item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,

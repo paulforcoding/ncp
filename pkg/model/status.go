@@ -5,9 +5,9 @@ type CopyStatus byte
 
 const (
 	CopyDiscovered CopyStatus = 1 + iota // Walker discovered, not pushed to channel
-	CopyDispatched                        // Walker pushed to channel
-	CopyDone                              // Copy completed
-	CopyError                             // Copy failed
+	CopyDispatched                       // Walker pushed to channel
+	CopyDone                             // Copy completed
+	CopyError                            // Copy failed
 )
 
 // CksumStatus represents the checksum verification status (DB Value Byte 2).

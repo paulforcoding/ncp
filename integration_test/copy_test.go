@@ -391,7 +391,7 @@ type failAfterN struct {
 	failAt int
 }
 
-func (d *failAfterN) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *failAfterN) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	d.mu.Lock()
 	d.count++
 	if d.count > d.failAt {
@@ -399,7 +399,7 @@ func (d *failAfterN) OpenFile(relPath string, size int64, mode os.FileMode, uid,
 		return nil, fmt.Errorf("simulated disk error after %d files", d.failAt)
 	}
 	d.mu.Unlock()
-	return d.Destination.OpenFile(relPath, size, mode, uid, gid)
+	return d.Destination.OpenFile(ctx, relPath, size, mode, uid, gid)
 }
 
 // cancelAfterWalkSource wraps a Source and cancels context after N Walk callbacks.

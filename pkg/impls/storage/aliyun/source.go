@@ -115,10 +115,10 @@ func (s *Source) Open(relPath string) (storage.Reader, error) {
 	}
 
 	return &Reader{
-		client:  s.client,
-		bucket:  s.bucket,
-		key:     key,
-		size:    result.ContentLength,
+		client:   s.client,
+		bucket:   s.bucket,
+		key:      key,
+		size:     result.ContentLength,
 		metadata: result.Metadata,
 	}, nil
 }
@@ -337,4 +337,3 @@ func parseInt64(s string) int64 {
 	}
 	return v
 }
-

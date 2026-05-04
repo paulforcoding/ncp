@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,7 @@ func TestDestinationMkdir(t *testing.T) {
 		t.Fatalf("new destination: %v", err)
 	}
 
-	if err := dst.Mkdir("a/b/c", 0o755, 0, 0); err != nil {
+	if err := dst.Mkdir(context.Background(), "a/b/c", 0o755, 0, 0); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
@@ -33,7 +34,7 @@ func TestDestinationOpenFileWriteAt(t *testing.T) {
 		t.Fatalf("new destination: %v", err)
 	}
 
-	w, err := dst.OpenFile("dir/file.txt", 5, 0o644, 0, 0)
+	w, err := dst.OpenFile(context.Background(), "dir/file.txt", 5, 0o644, 0, 0)
 	if err != nil {
 		t.Fatalf("openfile: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestDestinationOpenFileWriteAt(t *testing.T) {
 	}
 
 	// Close with nil checksum (local copy ignores it)
-	if err := w.Close(nil); err != nil {
+	if err := w.Close(context.Background(), nil); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestDestinationSymlink(t *testing.T) {
 	// Create target first
 	os.WriteFile(filepath.Join(dst.Base(), "target.txt"), []byte("data"), 0o644)
 
-	if err := dst.Symlink("link", "target.txt"); err != nil {
+	if err := dst.Symlink(context.Background(), "link", "target.txt"); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 
@@ -89,12 +90,12 @@ func TestDestinationSetMetadataChmod(t *testing.T) {
 	}
 
 	// Create a file first
-	w, _ := dst.OpenFile("meta.txt", 0, 0o644, 0, 0)
+	w, _ := dst.OpenFile(context.Background(), "meta.txt", 0, 0o644, 0, 0)
 	w.WriteAt([]byte("x"), 0)
-	w.Close(nil)
+	w.Close(context.Background(), nil)
 
 	meta := model.FileMetadata{Mode: 0o755}
-	if err := dst.SetMetadata("meta.txt", meta); err != nil {
+	if err := dst.SetMetadata(context.Background(), "meta.txt", meta); err != nil {
 		t.Fatalf("set metadata: %v", err)
 	}
 
@@ -111,11 +112,11 @@ func TestDestinationAutoMkdir(t *testing.T) {
 	}
 
 	// OpenFile with nested dirs should auto-create parents
-	w, err := dst.OpenFile("deep/nested/dir/file.txt", 0, 0o644, 0, 0)
+	w, err := dst.OpenFile(context.Background(), "deep/nested/dir/file.txt", 0, 0o644, 0, 0)
 	if err != nil {
 		t.Fatalf("openfile with nested dirs: %v", err)
 	}
-	w.Close(nil)
+	w.Close(context.Background(), nil)
 
 	if _, err := os.Stat(filepath.Join(dst.Base(), "deep", "nested", "dir")); err != nil {
 		t.Fatalf("parent dir should exist: %v", err)
@@ -128,12 +129,12 @@ func TestWriterSync(t *testing.T) {
 		t.Fatalf("new destination: %v", err)
 	}
 
-	w, _ := dst.OpenFile("sync.txt", 0, 0o644, 0, 0)
+	w, _ := dst.OpenFile(context.Background(), "sync.txt", 0, 0o644, 0, 0)
 	w.WriteAt([]byte("data"), 0)
 
 	if err := w.Sync(); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
-	w.Close(nil)
+	w.Close(context.Background(), nil)
 }

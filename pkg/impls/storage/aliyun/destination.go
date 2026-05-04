@@ -77,11 +77,11 @@ func NewDestination(cfg Config) (*Destination, error) {
 }
 
 // Mkdir creates a zero-byte marker object with key ending in "/".
-func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) error {
+func (d *Destination) Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error {
 	key := d.key(relPath + "/")
 	meta := posixMetadata(mode, uid, gid)
-	err := withRetry(context.Background(), d.retryCfg, func() error {
-		_, err := d.client.PutObject(context.Background(), &oss.PutObjectRequest{
+	err := withRetry(ctx, d.retryCfg, func() error {
+		_, err := d.client.PutObject(ctx, &oss.PutObjectRequest{
 			Bucket:   oss.Ptr(d.bucket),
 			Key:      oss.Ptr(key),
 			Body:     strings.NewReader(""),
@@ -96,11 +96,11 @@ func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) erro
 }
 
 // Symlink uploads a zero-byte object with the link target stored in metadata.
-func (d *Destination) Symlink(relPath string, target string) error {
+func (d *Destination) Symlink(ctx context.Context, relPath string, target string) error {
 	key := d.key(relPath)
 	meta := map[string]string{metaSymlinkTarget: target}
-	err := withRetry(context.Background(), d.retryCfg, func() error {
-		_, err := d.client.PutObject(context.Background(), &oss.PutObjectRequest{
+	err := withRetry(ctx, d.retryCfg, func() error {
+		_, err := d.client.PutObject(ctx, &oss.PutObjectRequest{
 			Bucket:   oss.Ptr(d.bucket),
 			Key:      oss.Ptr(key),
 			Body:     strings.NewReader(""),
@@ -115,22 +115,22 @@ func (d *Destination) Symlink(relPath string, target string) error {
 }
 
 // OpenFile starts an upload and returns a Writer.
-func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	key := d.key(relPath)
 	meta := posixMetadata(mode, uid, gid)
 
 	if size < int64(smallFileThreshold) {
-		return newSmallFileWriter(d.client, d.bucket, key, meta, d.retryCfg), nil
+		return newSmallFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg), nil
 	}
-	return newMultipartFileWriter(d.client, d.bucket, key, meta, d.retryCfg)
+	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg)
 }
 
 // SetMetadata updates an object's metadata using CopyObject with REPLACE directive.
-func (d *Destination) SetMetadata(relPath string, m model.FileMetadata) error {
+func (d *Destination) SetMetadata(ctx context.Context, relPath string, m model.FileMetadata) error {
 	key := d.key(relPath)
 
-	result, err := withRetryResult(context.Background(), d.retryCfg, func() (*oss.HeadObjectResult, error) {
-		return d.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+	result, err := withRetryResult(ctx, d.retryCfg, func() (*oss.HeadObjectResult, error) {
+		return d.client.HeadObject(ctx, &oss.HeadObjectRequest{
 			Bucket: oss.Ptr(d.bucket),
 			Key:    oss.Ptr(key),
 		})
@@ -160,8 +160,8 @@ func (d *Destination) SetMetadata(relPath string, m model.FileMetadata) error {
 		merged[metaXattrPrefix+k] = v
 	}
 
-	err = withRetry(context.Background(), d.retryCfg, func() error {
-		_, err := d.client.CopyObject(context.Background(), &oss.CopyObjectRequest{
+	err = withRetry(ctx, d.retryCfg, func() error {
+		_, err := d.client.CopyObject(ctx, &oss.CopyObjectRequest{
 			Bucket:            oss.Ptr(d.bucket),
 			Key:               oss.Ptr(key),
 			SourceBucket:      oss.Ptr(d.bucket),
@@ -182,11 +182,11 @@ func (d *Destination) key(relPath string) string {
 }
 
 // Restat returns metadata for an existing object on the destination (for skip-by-mtime).
-func (d *Destination) Restat(relPath string) (model.DiscoverItem, error) {
+func (d *Destination) Restat(ctx context.Context, relPath string) (model.DiscoverItem, error) {
 	key := d.key(relPath)
 
-	result, err := withRetryResult(context.Background(), d.retryCfg, func() (*oss.HeadObjectResult, error) {
-		return d.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+	result, err := withRetryResult(ctx, d.retryCfg, func() (*oss.HeadObjectResult, error) {
+		return d.client.HeadObject(ctx, &oss.HeadObjectRequest{
 			Bucket: oss.Ptr(d.bucket),
 			Key:    oss.Ptr(key),
 		})
@@ -252,7 +252,7 @@ type smallFileWriter struct {
 	closed   bool
 }
 
-func newSmallFileWriter(client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig) *smallFileWriter {
+func newSmallFileWriter(_ context.Context, client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig) *smallFileWriter {
 	return &smallFileWriter{
 		client:   client,
 		bucket:   bucket,
@@ -276,7 +276,7 @@ func (w *smallFileWriter) WriteAt(p []byte, _ int64) (int, error) {
 
 func (w *smallFileWriter) Sync() error { return nil }
 
-func (w *smallFileWriter) Close(checksum []byte) error {
+func (w *smallFileWriter) Close(ctx context.Context, checksum []byte) error {
 	if w.closed {
 		return nil
 	}
@@ -292,8 +292,8 @@ func (w *smallFileWriter) Close(checksum []byte) error {
 	}
 	w.meta[metaMD5] = hex.EncodeToString(contentMD5)
 
-	result, err := withRetryResult(context.Background(), w.retryCfg, func() (*oss.PutObjectResult, error) {
-		return w.client.PutObject(context.Background(), &oss.PutObjectRequest{
+	result, err := withRetryResult(ctx, w.retryCfg, func() (*oss.PutObjectResult, error) {
+		return w.client.PutObject(ctx, &oss.PutObjectRequest{
 			Bucket:     oss.Ptr(w.bucket),
 			Key:        oss.Ptr(w.key),
 			Body:       bytes.NewReader(w.buf.Bytes()),
@@ -328,11 +328,12 @@ type multipartFileWriter struct {
 	md5Hash  hash.Hash
 	retryCfg RetryConfig
 	closed   bool
+	ctx      context.Context
 }
 
-func newMultipartFileWriter(client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig) (*multipartFileWriter, error) {
-	result, err := withRetryResult(context.Background(), retryCfg, func() (*oss.InitiateMultipartUploadResult, error) {
-		return client.InitiateMultipartUpload(context.Background(), &oss.InitiateMultipartUploadRequest{
+func newMultipartFileWriter(ctx context.Context, client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig) (*multipartFileWriter, error) {
+	result, err := withRetryResult(ctx, retryCfg, func() (*oss.InitiateMultipartUploadResult, error) {
+		return client.InitiateMultipartUpload(ctx, &oss.InitiateMultipartUploadRequest{
 			Bucket:   oss.Ptr(bucket),
 			Key:      oss.Ptr(key),
 			Metadata: meta,
@@ -350,6 +351,7 @@ func newMultipartFileWriter(client *oss.Client, bucket, key string, meta map[str
 		uploadID: oss.ToString(result.UploadId),
 		md5Hash:  md5.New(),
 		retryCfg: retryCfg,
+		ctx:      ctx,
 	}, nil
 }
 
@@ -388,8 +390,8 @@ func (w *multipartFileWriter) flushPart() error {
 	copy(data, w.partBuf.Bytes())
 	partMD5 := md5.Sum(data)
 
-	result, err := withRetryResult(context.Background(), w.retryCfg, func() (*oss.UploadPartResult, error) {
-		return w.client.UploadPart(context.Background(), &oss.UploadPartRequest{
+	result, err := withRetryResult(w.ctx, w.retryCfg, func() (*oss.UploadPartResult, error) {
+		return w.client.UploadPart(w.ctx, &oss.UploadPartRequest{
 			Bucket:        oss.Ptr(w.bucket),
 			Key:           oss.Ptr(w.key),
 			UploadId:      oss.Ptr(w.uploadID),
@@ -413,11 +415,12 @@ func (w *multipartFileWriter) flushPart() error {
 
 func (w *multipartFileWriter) Sync() error { return nil }
 
-func (w *multipartFileWriter) Close(checksum []byte) error {
+func (w *multipartFileWriter) Close(ctx context.Context, checksum []byte) error {
 	if w.closed {
 		return nil
 	}
 	w.closed = true
+	w.ctx = ctx
 
 	if err := w.flushPart(); err != nil {
 		w.abortUpload()
@@ -428,8 +431,8 @@ func (w *multipartFileWriter) Close(checksum []byte) error {
 		w.meta[metaMD5] = hex.EncodeToString(checksum)
 	}
 
-	_, err := withRetryResult(context.Background(), w.retryCfg, func() (*oss.CompleteMultipartUploadResult, error) {
-		return w.client.CompleteMultipartUpload(context.Background(), &oss.CompleteMultipartUploadRequest{
+	_, err := withRetryResult(w.ctx, w.retryCfg, func() (*oss.CompleteMultipartUploadResult, error) {
+		return w.client.CompleteMultipartUpload(w.ctx, &oss.CompleteMultipartUploadRequest{
 			Bucket:   oss.Ptr(w.bucket),
 			Key:      oss.Ptr(w.key),
 			UploadId: oss.Ptr(w.uploadID),
@@ -446,7 +449,7 @@ func (w *multipartFileWriter) Close(checksum []byte) error {
 }
 
 func (w *multipartFileWriter) abortUpload() {
-	_, _ = w.client.AbortMultipartUpload(context.Background(), &oss.AbortMultipartUploadRequest{
+	_, _ = w.client.AbortMultipartUpload(w.ctx, &oss.AbortMultipartUploadRequest{
 		Bucket:   oss.Ptr(w.bucket),
 		Key:      oss.Ptr(w.key),
 		UploadId: oss.Ptr(w.uploadID),

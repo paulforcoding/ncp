@@ -11,9 +11,9 @@ type IOSizeTier struct {
 // aligned with acp defaults.
 func DefaultIOSizeTiers() []IOSizeTier {
 	const (
-		KB  = 1024
-		MB  = 1024 * KB
-		_1MB = 1 * MB
+		KB     = 1024
+		MB     = 1024 * KB
+		_1MB   = 1 * MB
 		_100MB = 100 * MB
 		_128KB = 128 * KB
 		_1MBIO = 1 * MB

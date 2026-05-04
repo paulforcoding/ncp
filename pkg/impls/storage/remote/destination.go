@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -37,7 +38,7 @@ func NewDestination(addr, basePath string) (*Destination, error) {
 }
 
 // OpenFile sends MsgOpen and returns a Writer backed by the shared connection.
-func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	fullPath := d.fullPath(relPath)
 	msg := &protocol.OpenMsg{
 		Path:  fullPath,
@@ -55,7 +56,7 @@ func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid
 }
 
 // Mkdir sends MsgMkdir to the server.
-func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) error {
+func (d *Destination) Mkdir(_ context.Context, relPath string, mode os.FileMode, uid, gid int) error {
 	msg := &protocol.MkdirMsg{
 		Path: d.fullPath(relPath),
 		Mode: uint32(mode),
@@ -70,7 +71,7 @@ func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) erro
 }
 
 // Symlink sends MsgSymlink to the server.
-func (d *Destination) Symlink(relPath string, target string) error {
+func (d *Destination) Symlink(_ context.Context, relPath string, target string) error {
 	msg := &protocol.SymlinkMsg{
 		Target:   target,
 		LinkPath: d.fullPath(relPath),
@@ -83,7 +84,7 @@ func (d *Destination) Symlink(relPath string, target string) error {
 }
 
 // SetMetadata sends MsgUtime and MsgSetxattr to the server.
-func (d *Destination) SetMetadata(relPath string, meta model.FileMetadata) error {
+func (d *Destination) SetMetadata(_ context.Context, relPath string, meta model.FileMetadata) error {
 	fullPath := d.fullPath(relPath)
 
 	// Utime

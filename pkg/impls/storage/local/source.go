@@ -72,14 +72,14 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 		uid, gid := fileOwner(info)
 
 		item := model.DiscoverItem{
-			SrcBase:    s.base,
-			RelPath:    relPath,
-			FileType:   ft,
-			FileSize:   info.Size(),
-			Mode:       uint32(mode.Perm()),
-			Uid:        uid,
-			Gid:        gid,
-			Mtime:      info.ModTime().UnixNano(),
+			SrcBase:  s.base,
+			RelPath:  relPath,
+			FileType: ft,
+			FileSize: info.Size(),
+			Mode:     uint32(mode.Perm()),
+			Uid:      uid,
+			Gid:      gid,
+			Mtime:    info.ModTime().UnixNano(),
 		}
 
 		// Read symlink target at walk time so Replicator doesn't need Source access

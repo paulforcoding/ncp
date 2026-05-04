@@ -3,6 +3,7 @@ package copy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -53,8 +54,9 @@ func GenerateReport(taskID string, store progress.ProgressStore, done, failed in
 	return r, nil
 }
 
-// WriteReport writes the report as JSON to a file and stdout.
-func WriteReport(report *Report, reportPath string) error {
+// WriteReport writes the report as JSON to a file and an optional writer.
+// If out is non-nil, the JSON report is also written there (e.g. os.Stdout).
+func WriteReport(report *Report, reportPath string, out io.Writer) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal report: %w", err)
@@ -70,7 +72,9 @@ func WriteReport(report *Report, reportPath string) error {
 		}
 	}
 
-	// Write to stdout (Agent-First: JSON output)
-	fmt.Println(string(data))
+	// Write to out if provided (Agent-First: JSON output)
+	if out != nil {
+		_, _ = fmt.Fprintln(out, string(data))
+	}
 	return nil
 }

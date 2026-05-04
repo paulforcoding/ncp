@@ -31,15 +31,15 @@ type Source interface {
 type Writer interface {
 	WriteAt(p []byte, offset int64) (n int, err error)
 	Sync() error
-	Close(checksum []byte) error
+	Close(ctx context.Context, checksum []byte) error
 }
 
 // Destination writes files to a storage backend.
 type Destination interface {
-	OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (Writer, error)
-	Mkdir(relPath string, mode os.FileMode, uid, gid int) error
-	Symlink(relPath string, target string) error
-	SetMetadata(relPath string, meta model.FileMetadata) error
+	OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (Writer, error)
+	Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error
+	Symlink(ctx context.Context, relPath string, target string) error
+	SetMetadata(ctx context.Context, relPath string, meta model.FileMetadata) error
 }
 
 // TaskFinalizer is optionally implemented by Destination implementations
@@ -51,5 +51,5 @@ type TaskFinalizer interface {
 // Restatter is optionally implemented by Destination implementations
 // that support checking existing file metadata for skip-by-mtime optimization.
 type Restatter interface {
-	Restat(relPath string) (model.DiscoverItem, error)
+	Restat(ctx context.Context, relPath string) (model.DiscoverItem, error)
 }

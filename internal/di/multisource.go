@@ -19,7 +19,7 @@ type MultiSource struct {
 }
 
 type multiSourceEntry struct {
-	prefix string           // e.g. "project-a/" — trailing slash for dirs
+	prefix string // e.g. "project-a/" — trailing slash for dirs
 	src    storage.Source
 }
 

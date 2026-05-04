@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"os"
 
 	"github.com/zp001/ncp/pkg/model"
@@ -45,7 +46,7 @@ func (w *Writer) Sync() error {
 
 // Close closes the file. SyncWrites triggers a final fsync before close.
 // The checksum parameter is ignored for local copies.
-func (w *Writer) Close(_ []byte) error {
+func (w *Writer) Close(_ context.Context, _ []byte) error {
 	if w.cfg.SyncWrites {
 		w.f.Sync()
 	}
