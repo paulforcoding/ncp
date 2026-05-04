@@ -307,7 +307,7 @@ func (m *SetxattrMsg) Decode(data []byte) error {
 // TaskDoneMsg is the payload for MsgTaskDone (empty).
 type TaskDoneMsg struct{}
 
-func (m *TaskDoneMsg) Encode() []byte { return nil }
+func (m *TaskDoneMsg) Encode() []byte        { return nil }
 func (m *TaskDoneMsg) Decode(_ []byte) error { return nil }
 
 // --- Server → Client messages ---
@@ -519,10 +519,10 @@ func (e *ListEntry) Decode(data []byte) error {
 // DataMsg is the payload for MsgData — server→client data response.
 // Used for both List results and Pread data.
 type DataMsg struct {
-	ResultCode         uint16
-	Entries            []ListEntry
-	ContinuationToken  string
-	Data               []byte
+	ResultCode        uint16
+	Entries           []ListEntry
+	ContinuationToken string
+	Data              []byte
 }
 
 func (m *DataMsg) Encode() []byte {

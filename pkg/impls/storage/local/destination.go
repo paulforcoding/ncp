@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -34,7 +35,7 @@ func NewDestinationWithConfig(base string, cfg WriterConfig) (*Destination, erro
 }
 
 // OpenFile creates or opens a file for writing (pwrite semantics).
-func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	fullPath := filepath.Join(d.base, relPath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -59,7 +60,7 @@ func (d *Destination) OpenFile(relPath string, size int64, mode os.FileMode, uid
 }
 
 // Mkdir creates a directory (recursively).
-func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) error {
+func (d *Destination) Mkdir(_ context.Context, relPath string, mode os.FileMode, uid, gid int) error {
 	fullPath := filepath.Join(d.base, relPath)
 	if err := os.MkdirAll(fullPath, mode); err != nil {
 		return fmt.Errorf("local mkdir %s: %w", relPath, err)
@@ -68,7 +69,7 @@ func (d *Destination) Mkdir(relPath string, mode os.FileMode, uid, gid int) erro
 }
 
 // Symlink creates a symbolic link (does not follow).
-func (d *Destination) Symlink(relPath string, target string) error {
+func (d *Destination) Symlink(_ context.Context, relPath string, target string) error {
 	fullPath := filepath.Join(d.base, relPath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -84,12 +85,12 @@ func (d *Destination) Symlink(relPath string, target string) error {
 }
 
 // SetMetadata applies POSIX metadata to a file or directory.
-func (d *Destination) SetMetadata(relPath string, meta model.FileMetadata) error {
+func (d *Destination) SetMetadata(_ context.Context, relPath string, meta model.FileMetadata) error {
 	return setMetadata(d.base, relPath, meta)
 }
 
 // Restat returns metadata for an existing file on the destination (for skip-by-mtime).
-func (d *Destination) Restat(relPath string) (model.DiscoverItem, error) {
+func (d *Destination) Restat(_ context.Context, relPath string) (model.DiscoverItem, error) {
 	fullPath := filepath.Join(d.base, relPath)
 	info, err := os.Lstat(fullPath)
 	if err != nil {

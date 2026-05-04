@@ -1,6 +1,8 @@
 package copy
 
 import (
+	"context"
+
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
@@ -8,13 +10,13 @@ import (
 // ShouldSkipCopy checks if a file can be skipped during copy.
 // Returns true if dst already has an identical file (same mtime+size for local,
 // or matching ETag for OSS single-part uploads).
-func ShouldSkipCopy(dst storage.Destination, item model.DiscoverItem) (bool, error) {
+func ShouldSkipCopy(ctx context.Context, dst storage.Destination, item model.DiscoverItem) (bool, error) {
 	restatter, ok := dst.(storage.Restatter)
 	if !ok {
 		return false, nil
 	}
 
-	dstItem, err := restatter.Restat(item.RelPath)
+	dstItem, err := restatter.Restat(ctx, item.RelPath)
 	if err != nil {
 		return false, nil
 	}

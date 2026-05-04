@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/zp001/ncp/internal/protocol"
@@ -44,7 +45,7 @@ func (w *Writer) Sync() error {
 // Close sends MsgClose with the client checksum to the server.
 // The server compares its own MD5 with the client checksum.
 // Does NOT close the underlying conn — the Destination owns it.
-func (w *Writer) Close(checksum []byte) error {
+func (w *Writer) Close(_ context.Context, checksum []byte) error {
 	if w.closed {
 		return nil
 	}

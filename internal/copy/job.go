@@ -3,6 +3,7 @@ package copy
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -52,15 +53,17 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 // JobOption configures a Job.
 type JobOption func(*Job)
 
-func WithParallelism(n int) JobOption             { return func(j *Job) { j.parallelism = n } }
-func WithFileLog(fl FileLogger, sec int) JobOption { return func(j *Job) { j.fileLog = fl; j.logInterval = sec } }
-func WithIOSize(size int) JobOption               { return func(j *Job) { j.ioSize = size } }
-func WithChannelBuf(n int) JobOption              { return func(j *Job) { j.channelBuf = n } }
-func WithTaskID(id string) JobOption              { return func(j *Job) { j.taskID = id } }
-func WithDstBase(base string) JobOption           { return func(j *Job) { j.dstBase = base } }
-func WithEnsureDirMtime(v bool) JobOption         { return func(j *Job) { j.ensureDirMtime = v } }
-func WithResume(v bool) JobOption                 { return func(j *Job) { j.resume = v } }
-func WithSkipByMtime(v bool) JobOption            { return func(j *Job) { j.skipByMtime = v } }
+func WithParallelism(n int) JobOption { return func(j *Job) { j.parallelism = n } }
+func WithFileLog(fl FileLogger, sec int) JobOption {
+	return func(j *Job) { j.fileLog = fl; j.logInterval = sec }
+}
+func WithIOSize(size int) JobOption                     { return func(j *Job) { j.ioSize = size } }
+func WithChannelBuf(n int) JobOption                    { return func(j *Job) { j.channelBuf = n } }
+func WithTaskID(id string) JobOption                    { return func(j *Job) { j.taskID = id } }
+func WithDstBase(base string) JobOption                 { return func(j *Job) { j.dstBase = base } }
+func WithEnsureDirMtime(v bool) JobOption               { return func(j *Job) { j.ensureDirMtime = v } }
+func WithResume(v bool) JobOption                       { return func(j *Job) { j.resume = v } }
+func WithSkipByMtime(v bool) JobOption                  { return func(j *Job) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
 func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 	return func(j *Job) { j.dstFactory = f }
@@ -76,7 +79,7 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 	dbWriter := NewDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
 	// Start the pipeline
-	replWg := j.startReplicators(discoverCh, resultCh)
+	replWg := j.startReplicators(ctx, discoverCh, resultCh)
 	dbWg := j.startDBWriter(dbWriter, resultCh)
 
 	go func() {
@@ -118,7 +121,7 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 	return freshWalker.Run(ctx, discoverCh)
 }
 
-func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
@@ -143,7 +146,7 @@ func (j *Job) startReplicators(discoverCh <-chan model.DiscoverItem, resultCh ch
 				}
 			}
 			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
-			r.Run(discoverCh, resultCh)
+			r.Run(ctx, discoverCh, resultCh)
 		}(i)
 	}
 	return &wg
@@ -176,7 +179,7 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 	// EnsureDirMtime
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
 		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
-			_ = err
+			fmt.Fprintf(os.Stderr, "ncp: warn: ensure dir mtime: %v\n", err)
 		}
 	}
 

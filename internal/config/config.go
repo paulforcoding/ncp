@@ -33,7 +33,7 @@ type Config struct {
 	OSSAK       string `json:"-" mapstructure:"OSSAK"`
 	OSSSK       string `json:"-" mapstructure:"OSSSK"`
 
-	DryRun bool `json:"-" mapstructure:"-"`
+	DryRun bool   `json:"-" mapstructure:"-"`
 	TaskID string `json:"-" mapstructure:"-"`
 }
 

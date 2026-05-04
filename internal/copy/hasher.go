@@ -2,8 +2,8 @@ package copy
 
 import (
 	"crypto/md5"
-	"hash"
 	"fmt"
+	"hash"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/zp001/ncp/pkg/model"

@@ -53,12 +53,14 @@ func WithCksumParallelism(n int) CksumJobOption { return func(j *CksumJob) { j.p
 func WithCksumFileLog(fl copy.FileLogger, sec int) CksumJobOption {
 	return func(j *CksumJob) { j.fileLog = fl; j.logInterval = sec }
 }
-func WithCksumIOSize(size int) CksumJobOption                { return func(j *CksumJob) { j.ioSize = size } }
-func WithCksumTaskID(id string) CksumJobOption               { return func(j *CksumJob) { j.taskID = id } }
-func WithCksumResume(v bool) CksumJobOption                  { return func(j *CksumJob) { j.resume = v } }
-func WithCksumSkipByMtime(v bool) CksumJobOption            { return func(j *CksumJob) { j.skipByMtime = v } }
-func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption { return func(j *CksumJob) { j.cksumAlgo = algo } }
-func WithCksumChannelBuf(n int) CksumJobOption              { return func(j *CksumJob) { j.channelBuf = n } }
+func WithCksumIOSize(size int) CksumJobOption    { return func(j *CksumJob) { j.ioSize = size } }
+func WithCksumTaskID(id string) CksumJobOption   { return func(j *CksumJob) { j.taskID = id } }
+func WithCksumResume(v bool) CksumJobOption      { return func(j *CksumJob) { j.resume = v } }
+func WithCksumSkipByMtime(v bool) CksumJobOption { return func(j *CksumJob) { j.skipByMtime = v } }
+func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption {
+	return func(j *CksumJob) { j.cksumAlgo = algo }
+}
+func WithCksumChannelBuf(n int) CksumJobOption { return func(j *CksumJob) { j.channelBuf = n } }
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {

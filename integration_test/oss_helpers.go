@@ -223,7 +223,7 @@ type failAfterNShared struct {
 	failAt int
 }
 
-func (d *failAfterNShared) OpenFile(relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *failAfterNShared) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
 	d.mu.Lock()
 	*d.count++
 	if *d.count > d.failAt {
@@ -231,7 +231,7 @@ func (d *failAfterNShared) OpenFile(relPath string, size int64, mode os.FileMode
 		return nil, fmt.Errorf("simulated error after %d files", d.failAt)
 	}
 	d.mu.Unlock()
-	return d.Destination.OpenFile(relPath, size, mode, uid, gid)
+	return d.Destination.OpenFile(ctx, relPath, size, mode, uid, gid)
 }
 
 // newFailAfterNShared creates a shared counter failAfterN wrapper.

@@ -4,13 +4,13 @@ package model
 // 0x2000-0x2FFF protocol, 0x3000-0xFFFF reserved.
 const (
 	// General errors (0x0001-0x0FFF)
-	ErrUnknown          uint16 = 0x0001
-	ErrInvalidArgument  uint16 = 0x0002
-	ErrConfig           uint16 = 0x0003
-	ErrCredential       uint16 = 0x0004
-	ErrTaskNotFound     uint16 = 0x0005
-	ErrTaskRunning      uint16 = 0x0006
-	ErrWalkIncomplete   uint16 = 0x0007
+	ErrUnknown         uint16 = 0x0001
+	ErrInvalidArgument uint16 = 0x0002
+	ErrConfig          uint16 = 0x0003
+	ErrCredential      uint16 = 0x0004
+	ErrTaskNotFound    uint16 = 0x0005
+	ErrTaskRunning     uint16 = 0x0006
+	ErrWalkIncomplete  uint16 = 0x0007
 
 	// File errors (0x1000-0x1FFF)
 	ErrFileOpen         uint16 = 0x1001
@@ -23,8 +23,8 @@ const (
 	ErrFilePermission   uint16 = 0x1008
 
 	// Protocol errors (0x2000-0x2FFF)
-	ErrProtocol         uint16 = 0x2001
-	ErrProtocolVersion  uint16 = 0x2002
-	ErrProtocolAuth     uint16 = 0x2003
-	ErrConnectionLost   uint16 = 0x2004
+	ErrProtocol        uint16 = 0x2001
+	ErrProtocolVersion uint16 = 0x2002
+	ErrProtocolAuth    uint16 = 0x2003
+	ErrConnectionLost  uint16 = 0x2004
 )

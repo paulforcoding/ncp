@@ -11,7 +11,7 @@ const (
 	Magic   uint32 = 0x4E435004 // "NCP\x04" — bumped for CRC32
 	Version uint8  = 2
 
-	HeaderSize    = 14 // 4 (magic) + 1 (version) + 1 (type) + 4 (length) + 4 (crc32)
+	HeaderSize     = 14               // 4 (magic) + 1 (version) + 1 (type) + 4 (length) + 4 (crc32)
 	MaxPayloadSize = 16 * 1024 * 1024 // 16 MB
 )
 
