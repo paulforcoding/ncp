@@ -96,8 +96,12 @@ func TestBatch(t *testing.T) {
 func TestIter(t *testing.T) {
 	s := openStore(t)
 
-	s.Set("a.txt", model.CopyDone, model.CksumPass)
-	s.Set("b.txt", model.CopyError, model.CksumNone)
+	if err := s.Set("a.txt", model.CopyDone, model.CksumPass); err != nil {
+		t.Fatalf("set a.txt: %v", err)
+	}
+	if err := s.Set("b.txt", model.CopyError, model.CksumNone); err != nil {
+		t.Fatalf("set b.txt: %v", err)
+	}
 
 	it, err := s.Iter()
 	if err != nil {
@@ -120,7 +124,9 @@ func TestIter(t *testing.T) {
 func TestDelete(t *testing.T) {
 	s := openStore(t)
 
-	s.Set("del.txt", model.CopyDone, model.CksumNone)
+	if err := s.Set("del.txt", model.CopyDone, model.CksumNone); err != nil {
+		t.Fatalf("set del.txt: %v", err)
+	}
 	if err := s.Delete("del.txt"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -160,7 +166,9 @@ func TestDestroy(t *testing.T) {
 	if err := s.Open(dir); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	s.Set("x.txt", model.CopyDone, model.CksumNone)
+	if err := s.Set("x.txt", model.CopyDone, model.CksumNone); err != nil {
+		t.Fatalf("set x.txt: %v", err)
+	}
 
 	if err := s.Destroy(); err != nil {
 		t.Fatalf("destroy: %v", err)
