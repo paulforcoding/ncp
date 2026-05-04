@@ -3,11 +3,10 @@ package copy
 import (
 	"context"
 	"fmt"
-	"os"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -179,7 +178,7 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 	// EnsureDirMtime
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
 		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
-			fmt.Fprintf(os.Stderr, "ncp: warn: ensure dir mtime: %v\n", err)
+			slog.Warn("ensure dir mtime failed", "error", err)
 		}
 	}
 
@@ -201,17 +200,4 @@ func durationFromSec(sec int) time.Duration {
 		return 5 * time.Second
 	}
 	return time.Duration(sec) * time.Second
-}
-
-// EmitCopyPlan emits a copy_plan event if fileLog is available.
-func EmitCopyPlan(fileLog FileLogger, taskID string, src []string, dst string, algo model.CksumAlgorithm) {
-	if fileLog == nil {
-		return
-	}
-	fileLog.Emit(filelog.EventCopyPlan, map[string]any{
-		"taskId":    taskID,
-		"sources":   src,
-		"dest":      dst,
-		"algorithm": string(algo),
-	})
 }

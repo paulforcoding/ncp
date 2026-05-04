@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -289,7 +290,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
+		slog.Error("copy job failed", "taskId", taskID, "error", err, "exitCode", exitCode)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -354,7 +355,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
+		slog.Error("resume copy failed", "taskId", taskID, "error", err, "exitCode", exitCode)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -413,7 +414,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", runErr.Error(), taskID, exitCode)
+		slog.Error("resume failed", "taskId", taskID, "error", runErr, "exitCode", exitCode)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -553,7 +554,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
+		slog.Error("cksum job failed", "taskId", taskID, "error", err, "exitCode", exitCode)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -610,7 +611,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "{\"error\":%q,\"taskId\":%q,\"code\":%d}\n", err.Error(), taskID, exitCode)
+		slog.Error("resume cksum failed", "taskId", taskID, "error", err, "exitCode", exitCode)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -668,7 +669,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		srv.Close()
 	}()
 
-	fmt.Fprintf(os.Stderr, "{\"event\":\"serve\",\"listen\":%q}\n", listenAddr)
+	slog.Info("ncp serve started", "listen", listenAddr)
 
 	return srv.Serve()
 }

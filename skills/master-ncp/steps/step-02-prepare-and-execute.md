@@ -58,11 +58,11 @@ ncp copy ... &
 
 使用 Bash 工具的 `run_in_background: true`。
 
-**捕获 taskID：** ncp 启动后会在 FileLog 输出的第一行 emit `copy_plan` 事件。从中解析 `taskId`：
+**捕获 taskID：** ncp 启动后会将 taskID 写入 ProgressStorePath 下的任务目录。从中获取最新 taskID：
 
 ```bash
-# 等待 copy_plan 出现，然后提取 taskID
-head -1 /tmp/ncp_file_log.json | jq -r '.taskId'
+# 从 ProgressStorePath 获取最新任务 ID
+ls -t /tmp/ncp_progress_store | head -1
 ```
 
 如果进程立即失败（退出码 != 0），从输出诊断错误并报告给用户。

@@ -124,22 +124,44 @@ func (dw *DBWriter) flushLocked() {
 	}
 	batch.Close()
 
-	// Emit file_complete events
+	// Emit FileLog events
 	if dw.fileLog != nil {
 		for _, r := range dw.batch {
-			dw.emitFileComplete(r)
+			dw.emitFileEvents(r)
 		}
 	}
 
 	dw.batch = dw.batch[:0]
 }
 
+// emitFileEvents dispatches file_complete and file_metadata_complete according
+// to file type. Dir/symlink only emit file_metadata_complete; regular files
+// emit both (content result + metadata result).
+func (dw *DBWriter) emitFileEvents(r model.FileResult) {
+	switch r.FileType {
+	case model.FileDir, model.FileSymlink:
+		// No content copy for dirs/symlinks — only metadata event
+		dw.emitFileMetadataComplete(r)
+	case model.FileRegular:
+		dw.emitFileComplete(r)
+		dw.emitFileMetadataComplete(r)
+	}
+}
+
 func (dw *DBWriter) emitFileComplete(r model.FileResult) {
 	result := "done"
 	errorCode := ""
-	if r.CopyStatus == model.CopyError {
-		result = "error"
-		if r.Err != nil {
+
+	if r.Skipped {
+		result = "skipped"
+	} else if r.Err != nil {
+		// Distinguish content error from metadata error:
+		// If Checksum is non-empty and MetadataErr is set, content succeeded
+		// but SetMetadata failed — file_complete reports "done" for content.
+		if r.Checksum != "" && r.MetadataErr != nil {
+			result = "done"
+		} else {
+			result = "error"
 			errorCode = r.Err.Error()
 		}
 	}
@@ -156,10 +178,29 @@ func (dw *DBWriter) emitFileComplete(r model.FileResult) {
 		"srcHash":   r.SrcHash,
 		"dstHash":   r.DstHash,
 	}
-	if r.Skipped {
-		data["skipped"] = true
-	}
 	dw.fileLog.Emit(filelog.EventFileComplete, data)
+}
+
+func (dw *DBWriter) emitFileMetadataComplete(r model.FileResult) {
+	result := "done"
+	errorCode := ""
+
+	if r.MetadataErr != nil {
+		result = "error"
+		errorCode = r.MetadataErr.Error()
+	} else if r.Err != nil && r.FileType != model.FileRegular {
+		// Fallback for dir/symlink where MetadataErr may not be set
+		result = "error"
+		errorCode = r.Err.Error()
+	}
+
+	data := map[string]any{
+		"result":    result,
+		"errorCode": errorCode,
+		"relPath":   r.RelPath,
+		"fileType":  r.FileType.String(),
+	}
+	dw.fileLog.Emit(filelog.EventFileMetadataComplete, data)
 }
 
 // EmitFinalSummary emits a finished progress_summary event. It acquires the
