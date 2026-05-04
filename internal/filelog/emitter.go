@@ -68,8 +68,8 @@ func (e *Emitter) Emit(eventType string, data any) {
 	if err != nil {
 		return
 	}
-	e.w.Write(line)
-	e.w.Write([]byte("\n"))
+	_, _ = e.w.Write(line)
+	_, _ = e.w.Write([]byte("\n"))
 }
 
 // Close flushes and closes the underlying writer if it's a file.

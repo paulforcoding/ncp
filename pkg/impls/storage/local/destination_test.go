@@ -68,7 +68,9 @@ func TestDestinationSymlink(t *testing.T) {
 	}
 
 	// Create target first
-	os.WriteFile(filepath.Join(dst.Base(), "target.txt"), []byte("data"), 0o644)
+	if err := os.WriteFile(filepath.Join(dst.Base(), "target.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
 
 	if err := dst.Symlink(context.Background(), "link", "target.txt"); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -90,16 +92,26 @@ func TestDestinationSetMetadataChmod(t *testing.T) {
 	}
 
 	// Create a file first
-	w, _ := dst.OpenFile(context.Background(), "meta.txt", 0, 0o644, 0, 0)
-	w.WriteAt([]byte("x"), 0)
-	w.Close(context.Background(), nil)
+	w, err := dst.OpenFile(context.Background(), "meta.txt", 0, 0o644, 0, 0)
+	if err != nil {
+		t.Fatalf("openfile: %v", err)
+	}
+	if _, err := w.WriteAt([]byte("x"), 0); err != nil {
+		t.Fatalf("writeat: %v", err)
+	}
+	if err := w.Close(context.Background(), nil); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	meta := model.FileMetadata{Mode: 0o755}
 	if err := dst.SetMetadata(context.Background(), "meta.txt", meta); err != nil {
 		t.Fatalf("set metadata: %v", err)
 	}
 
-	st, _ := os.Stat(filepath.Join(dst.Base(), "meta.txt"))
+	st, err := os.Stat(filepath.Join(dst.Base(), "meta.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
 	if st.Mode().Perm() != 0o755 {
 		t.Fatalf("expected mode 0755, got %04o", st.Mode().Perm())
 	}
@@ -116,7 +128,9 @@ func TestDestinationAutoMkdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openfile with nested dirs: %v", err)
 	}
-	w.Close(context.Background(), nil)
+	if err := w.Close(context.Background(), nil); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	if _, err := os.Stat(filepath.Join(dst.Base(), "deep", "nested", "dir")); err != nil {
 		t.Fatalf("parent dir should exist: %v", err)
@@ -129,12 +143,19 @@ func TestWriterSync(t *testing.T) {
 		t.Fatalf("new destination: %v", err)
 	}
 
-	w, _ := dst.OpenFile(context.Background(), "sync.txt", 0, 0o644, 0, 0)
-	w.WriteAt([]byte("data"), 0)
+	w, err := dst.OpenFile(context.Background(), "sync.txt", 0, 0o644, 0, 0)
+	if err != nil {
+		t.Fatalf("openfile: %v", err)
+	}
+	if _, err := w.WriteAt([]byte("data"), 0); err != nil {
+		t.Fatalf("writeat: %v", err)
+	}
 
 	if err := w.Sync(); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
-	w.Close(context.Background(), nil)
+	if err := w.Close(context.Background(), nil); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 }

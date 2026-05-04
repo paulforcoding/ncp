@@ -100,14 +100,19 @@ func TestWriteAndReadMeta(t *testing.T) {
 func TestUpdateRunFinished(t *testing.T) {
 	dir := t.TempDir()
 	meta := NewMeta("task-test-002", "/src", "/dst", nil, JobTypeCopy)
-	WriteMetaTo(meta, dir)
+	if err := WriteMetaTo(meta, dir); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
 
 	// Mark as done
 	if err := UpdateRunFinished(meta, 0, dir); err != nil {
 		t.Fatalf("update run: %v", err)
 	}
 
-	read, _ := ReadMeta(dir, "task-test-002")
+	read, err := ReadMeta(dir, "task-test-002")
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
 	run := read.Runs[0]
 	if run.Status != RunStatusDone {
 		t.Fatalf("expected done status, got %s", run.Status)
@@ -123,11 +128,18 @@ func TestUpdateRunFinished(t *testing.T) {
 func TestUpdateRunFinished_Failed(t *testing.T) {
 	dir := t.TempDir()
 	meta := NewMeta("task-test-003", "/src", "/dst", nil, JobTypeCopy)
-	WriteMetaTo(meta, dir)
+	if err := WriteMetaTo(meta, dir); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
 
-	UpdateRunFinished(meta, 2, dir)
+	if err := UpdateRunFinished(meta, 2, dir); err != nil {
+		t.Fatalf("update run: %v", err)
+	}
 
-	read, _ := ReadMeta(dir, "task-test-003")
+	read, err := ReadMeta(dir, "task-test-003")
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
 	run := read.Runs[0]
 	if run.Status != RunStatusFailed {
 		t.Fatalf("expected failed status, got %s", run.Status)
@@ -140,17 +152,24 @@ func TestUpdateRunFinished_Failed(t *testing.T) {
 func TestAppendRun(t *testing.T) {
 	dir := t.TempDir()
 	meta := NewMeta("task-test-004", "/src", "/dst", nil, JobTypeCopy)
-	WriteMetaTo(meta, dir)
+	if err := WriteMetaTo(meta, dir); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
 
 	// Finish first run
-	UpdateRunFinished(meta, 0, dir)
+	if err := UpdateRunFinished(meta, 0, dir); err != nil {
+		t.Fatalf("update run: %v", err)
+	}
 
 	// Append a second run (e.g. resume)
 	if err := AppendRun(meta, JobTypeCopy, dir); err != nil {
 		t.Fatalf("append run: %v", err)
 	}
 
-	read, _ := ReadMeta(dir, "task-test-004")
+	read, err := ReadMeta(dir, "task-test-004")
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
 	if len(read.Runs) != 2 {
 		t.Fatalf("expected 2 runs, got %d", len(read.Runs))
 	}

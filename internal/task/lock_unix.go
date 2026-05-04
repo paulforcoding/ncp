@@ -37,7 +37,7 @@ func AcquireTaskLock(taskDir string) (*TaskLock, error) {
 // Release unlocks and closes the flock file.
 func (l *TaskLock) Release() error {
 	if l.flockFile != nil {
-		unix.Flock(int(l.flockFile.Fd()), unix.LOCK_UN)
+		_ = unix.Flock(int(l.flockFile.Fd()), unix.LOCK_UN)
 		return l.flockFile.Close()
 	}
 	return nil

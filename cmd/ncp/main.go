@@ -750,12 +750,6 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 	return fl, nil
 }
 
-// setupCopyDeps creates Source, Destination, and opens the Pebble store.
-// For ncp:// destinations, returns a dstFactory via extraOpts instead of a shared dst.
-func setupCopyDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
-	return setupCopyDepsMulti(cfg, []string{srcPath}, dstPath, progressDir, taskID)
-}
-
 // setupCopyDepsMulti supports multiple source paths. Single source falls through
 // to the same path; multiple sources create a di.MultiSource.
 func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {

@@ -48,7 +48,7 @@ type Meta struct {
 func GenerateTaskID() string {
 	ts := time.Now().Format("20060102-150405")
 	b := make([]byte, 2)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("task-%s-%04x", ts, b)
 }
 
@@ -56,7 +56,7 @@ func GenerateTaskID() string {
 func GenerateRunID() string {
 	ts := time.Now().Format("20060102-150405")
 	b := make([]byte, 2)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("run-%s-%04x", ts, b)
 }
 

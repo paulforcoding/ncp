@@ -40,10 +40,7 @@ func MatchSkip(src, dst model.DiscoverItem) bool {
 			return false
 		}
 		if src.ETag != "" && dst.ETag != "" {
-			if src.ETag == dst.ETag {
-				return true
-			}
-			return false
+			return src.ETag == dst.ETag
 		}
 		if src.Mtime != 0 && src.Mtime == dst.Mtime {
 			return true
