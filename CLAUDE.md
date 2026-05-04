@@ -97,6 +97,22 @@ internal/
 integration_test/     # 集成测试（本地↔OSS↔远程 交叉测试）
 ```
 
+### 2.5 Path Semantics
+
+**Copy:** `ncp copy` wraps all sources in `BasenamePrefixedSource`, so every source (single or multiple) is placed under its basename as a subdirectory of `dst`.
+
+```
+ncp copy /data/dir /tmp/           → /tmp/dir/...
+ncp copy a b /tmp/                 → /tmp/a/..., /tmp/b/...
+ncp copy oss://bucket/ /tmp/       → /tmp/bucket/...
+```
+
+**Cksum:** Both `src` and `dst` are explicit base paths. No automatic basename joining is performed.
+
+```
+ncp cksum /data/dir /tmp/dir       # compare /data/dir/* with /tmp/dir/*
+```
+
 ---
 
 ## 3. 核心接口契约
@@ -329,8 +345,9 @@ make lint           # golangci-lint
 
 1. **OSS 仅支持 md5**：使用 `oss://` 时 `--cksum-algorithm` 必须为 `md5`。
 2. **ncp:// 仅作目标**：`ncp://` 只能作为 copy 的 destination，不能作为 source。
-3. **多源限制**：多源复制仅支持本地路径，不能混用 `oss://` 或 `ncp://`。
-4. **DirectIO 与 SyncWrites 互斥**：同时启用会在配置验证时报错。
+3. **多源限制**：多个本地源可以同时复制，但不能混用 `oss://` 或 `ncp://` 作为多源之一。
+4. **copy vs cksum 路径语义不同**：`ncp copy /data/dir /tmp/` 产生 `/tmp/dir/...`（自动加 basename），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
+5. **DirectIO 与 SyncWrites 互斥**：同时启用会在配置验证时报错。
 5. **Resume 时 channelBuf 不可变**：resume 依赖 DB replay，channel buffer 大小在首次运行时固定。
 6. **任务并发锁**：同一 taskID 不允许并发运行，通过文件锁保护（`task/lock_unix.go`）。
 7. **远程协议无加密**：`ncp serve` 当前为明文传输，仅限可信网络使用。

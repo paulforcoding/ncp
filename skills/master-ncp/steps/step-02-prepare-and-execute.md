@@ -9,7 +9,7 @@
 **命令模板：**
 
 ```bash
-ncp copy <src1> [<src2> ...] <dst> \
+ncp copy <src1> [<src2> ...] <dst_parent> \
   [--CopyParallelism N] \
   [--ChannelBuf N] \
   [--cksum-algorithm md5|xxh64] \
@@ -23,6 +23,8 @@ ncp copy <src1> [<src2> ...] <dst> \
   [--no-skip-by-mtime]   # 仅当用户要禁用跳过时
 ```
 
+**注意 dst 语义：** `dst` 是**父目录**，源会以其 basename 创建子目录。例如 `ncp copy /data/project /backup/` 的结果在 `/backup/project/...`。
+
 **注意事项：**
 - 只包含与默认值不同或必需的参数（如 OSS 凭据）
 - 始终包含 `--ProgressStorePath` 和 `--FileLogOutput`，以便监控进度
@@ -31,18 +33,19 @@ ncp copy <src1> [<src2> ...] <dst> \
 
 ## 2.2 用户确认
 
-展示完整命令并请求确认：
+展示完整命令并请求确认（注意 dst 是父目录）：
 
 ```
 我将运行以下命令：
 
-  ncp copy /data/project ncp://server:9900/backup \
+  ncp copy /data/project ncp://server:9900/backup/ \
     --CopyParallelism 8 \
     --ChannelBuf 2000000 \
     --ProgressStorePath /tmp/ncp_progress_store \
     --FileLogOutput /tmp/ncp_file_log.json \
     --FileLogInterval 5
 
+结果将在 ncp://server:9900/backup/project/... 下
 是否执行？（是/否）
 ```
 
@@ -195,6 +198,7 @@ ps -o rss= -p <ncp_pid> 2>/dev/null
 3. 建议后续操作：
    - `ncp resume <taskID>` — 重试失败的文件
    - `ncp cksum --task <taskID>` — 验证已成功的文件
+   - `ncp cksum /data/project /backup/project` — 独立校验（两端为显式基址）
    - 查看 FileLog 中具体失败文件的详情
 
 任务完成（无论成功还是有错误）后，进入步骤 3。

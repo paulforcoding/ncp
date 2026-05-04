@@ -59,6 +59,7 @@ ls -t /tmp/ncp_progress_store | head -1
 后续操作：
   1. 修复问题后重试：ncp resume task-20260503-143000-abcd
   2. 验证已成功文件：ncp cksum --task task-20260503-143000-abcd
+  3. 独立校验（两端显式基址）：ncp cksum /data/project /backup/project
 ```
 
 **查看失败文件详情**，搜索 FileLog：

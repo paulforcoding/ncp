@@ -28,26 +28,33 @@ make build
 ## 快速开始
 
 ```bash
-# 复制本地目录到另一个本地路径
-ncp copy /data/project /backup/project
+# 复制本地目录 — 结果在 /backup/project/...
+ncp copy /data/project /backup/
 
 # 多源复制到一个目标目录
 ncp copy /data/logs /data/configs /backup/
 
-# 复制到远程 ncp 服务器
+# 复制到远程 ncp 服务器 — 在服务器上创建 /backup/project/...
 ncp serve --base /backup --listen :9900 &  # 在目标服务器上启动
-ncp copy /data/project ncp://server:9900/backup/project
+ncp copy /data/project ncp://server:9900/backup/
 
-# 复制到阿里云 OSS
+# 复制到阿里云 OSS — 在 bucket 下创建 backup/project/...
 ncp copy /data/project oss://my-bucket/backup/ \
   --endpoint oss-cn-shenzhen.aliyuncs.com \
   --region cn-shenzhen \
   --access-key-id YOUR_AK \
   --access-key-secret YOUR_SK
 
-# 校验数据一致性
+# 复制整桶 OSS — 结果在 /restore/my-bucket/...
+ncp copy oss://my-bucket/ /restore/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+
+# 校验数据一致性（两端都是显式基址）
 ncp cksum /data/project /backup/project
-ncp cksum /data/project oss://my-bucket/backup/ --endpoint ... --region ...
+ncp cksum /data/project oss://my-bucket/backup/project --endpoint ... --region ...
 
 # 恢复中断的任务
 ncp resume task-20260502-143000-abcd
@@ -61,6 +68,16 @@ ncp copy --task task-20260502-143000-abcd
 ### `ncp copy <src>... <dst>`
 
 从一个或多个源复制文件到目标。支持本地、`ncp://` 和 `oss://` 协议。
+
+**路径语义：** 每个源都会以其 basename 在 `dst` 下创建子目录。单源和多源均遵循此规则。
+
+```
+ncp copy /data/project /backup/
+# 结果：/backup/project/...
+
+ncp copy oss://my-bucket/ /restore/
+# 结果：/restore/my-bucket/...
+```
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -84,7 +101,7 @@ ncp copy --task task-20260502-143000-abcd
 
 ### `ncp cksum <src> <dst>`
 
-通过比对校验和验证源端与目的端数据一致性。
+通过比对校验和验证源端与目的端数据一致性。`src` 和 `dst` 都是显式基址，不会自动 join basename。
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|

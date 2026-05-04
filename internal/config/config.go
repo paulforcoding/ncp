@@ -41,10 +41,10 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		CopyParallelism:   1,
-		ProgramLogLevel:   "info",
+		ProgramLogLevel:   "warning",
 		ProgramLogOutput:  "console",
 		FileLogEnabled:    true,
-		FileLogOutput:     "console",
+		FileLogOutput:     "/tmp/ncp_file_log.json",
 		FileLogInterval:   5,
 		DirectIO:          false,
 		SyncWrites:        true,

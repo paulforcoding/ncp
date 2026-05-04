@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/copy"
+	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/pkg/impls/progress/pebble"
 	"github.com/zp001/ncp/pkg/impls/storage/local"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -550,5 +551,163 @@ func TestIntegration_ResumeAfterPartialFailure(t *testing.T) {
 
 	if err := VerifyCopy(src, dst); err != nil {
 		t.Fatalf("verify copy after resume: %v", err)
+	}
+}
+
+// runCopyJobWithBasename wraps sources in BasenamePrefixedSource to mimic CLI behavior.
+func runCopyJobWithBasename(t *testing.T, srcPaths []string, dst string, store *pebble.Store, opts ...copy.JobOption) (int, error) {
+	t.Helper()
+	sources := make([]storage.Source, len(srcPaths))
+	basenames := make([]string, len(srcPaths))
+	for i, sp := range srcPaths {
+		srcObj, err := local.NewSource(sp)
+		if err != nil {
+			t.Fatalf("new source %s: %v", sp, err)
+		}
+		sources[i] = srcObj
+		basenames[i] = filepath.Base(sp)
+	}
+	bps, err := di.NewBasenamePrefixedSource(sources, basenames)
+	if err != nil {
+		t.Fatalf("new basename-prefixed source: %v", err)
+	}
+	dstObj, err := local.NewDestination(dst)
+	if err != nil {
+		t.Fatalf("new destination: %v", err)
+	}
+	job := copy.NewJob(bps, dstObj, store, opts...)
+	ctx := context.Background()
+	return job.Run(ctx)
+}
+
+// Test 12: BasenamePrefixedSource — single directory source
+func TestIntegration_BasenamePrefixed_SingleDir(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	os.MkdirAll(filepath.Join(src, "subdir"), 0o755)
+	os.WriteFile(filepath.Join(src, "file1.txt"), []byte("hello"), 0o644)
+	os.WriteFile(filepath.Join(src, "subdir", "file2.txt"), []byte("world"), 0o644)
+	os.Symlink("file1.txt", filepath.Join(src, "link1"))
+
+	store := openTestStore(t)
+	exitCode, err := runCopyJobWithBasename(t, []string{src}, dst, store)
+	if err != nil {
+		t.Fatalf("copy job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	baseName := filepath.Base(src)
+
+	data, err := os.ReadFile(filepath.Join(dst, baseName, "file1.txt"))
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("file1.txt content mismatch")
+	}
+	data, err = os.ReadFile(filepath.Join(dst, baseName, "subdir", "file2.txt"))
+	if err != nil || string(data) != "world" {
+		t.Fatalf("file2.txt content mismatch")
+	}
+	target, err := os.Readlink(filepath.Join(dst, baseName, "link1"))
+	if err != nil || target != "file1.txt" {
+		t.Fatalf("symlink target mismatch: got %q, err %v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, baseName, "subdir")); err != nil {
+		t.Fatalf("subdir missing: %v", err)
+	}
+}
+
+// Test 13: BasenamePrefixedSource — multiple local sources
+func TestIntegration_BasenamePrefixed_MultiSource(t *testing.T) {
+	srcA := t.TempDir()
+	srcB := t.TempDir()
+	dst := t.TempDir()
+
+	os.WriteFile(filepath.Join(srcA, "a.txt"), []byte("A"), 0o644)
+	os.WriteFile(filepath.Join(srcB, "b.txt"), []byte("B"), 0o644)
+
+	store := openTestStore(t)
+	exitCode, err := runCopyJobWithBasename(t, []string{srcA, srcB}, dst, store)
+	if err != nil {
+		t.Fatalf("copy job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	baseA := filepath.Base(srcA)
+	baseB := filepath.Base(srcB)
+
+	data, _ := os.ReadFile(filepath.Join(dst, baseA, "a.txt"))
+	if string(data) != "A" {
+		t.Fatalf("a.txt mismatch")
+	}
+	data, _ = os.ReadFile(filepath.Join(dst, baseB, "b.txt"))
+	if string(data) != "B" {
+		t.Fatalf("b.txt mismatch")
+	}
+}
+
+// Test 14: BasenamePrefixedSource — single file source
+func TestIntegration_BasenamePrefixed_SingleFile(t *testing.T) {
+	srcDir := t.TempDir()
+	dst := t.TempDir()
+
+	srcFile := filepath.Join(srcDir, "single.txt")
+	os.WriteFile(srcFile, []byte("solo"), 0o644)
+
+	store := openTestStore(t)
+	exitCode, err := runCopyJobWithBasename(t, []string{srcFile}, dst, store)
+	if err != nil {
+		t.Fatalf("copy job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dst, "single.txt"))
+	if err != nil || string(data) != "solo" {
+		t.Fatalf("single.txt mismatch: got %q, err %v", string(data), err)
+	}
+}
+
+// Test 15: BasenamePrefixedSource — resume preserves basename paths
+func TestIntegration_BasenamePrefixed_Resume(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	os.WriteFile(filepath.Join(src, "f1.txt"), []byte("1"), 0o644)
+	os.WriteFile(filepath.Join(src, "f2.txt"), []byte("2"), 0o644)
+
+	store := openTestStore(t)
+	exitCode, err := runCopyJobWithBasename(t, []string{src}, dst, store)
+	if err != nil {
+		t.Fatalf("first copy: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	baseName := filepath.Base(src)
+
+	// Reset one file to discovered and remove it from dst
+	if err := store.Set(baseName+"/f2.txt", model.CopyDiscovered, model.CksumNone); err != nil {
+		t.Fatalf("set discovered: %v", err)
+	}
+	os.Remove(filepath.Join(dst, baseName, "f2.txt"))
+
+	// Resume via BasenamePrefixedSource
+	exitCode, err = runCopyJobWithBasename(t, []string{src}, dst, store)
+	if err != nil {
+		t.Fatalf("resume job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dst, baseName, "f2.txt"))
+	if err != nil || string(data) != "2" {
+		t.Fatalf("f2.txt content mismatch after resume: %q, err %v", string(data), err)
 	}
 }

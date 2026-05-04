@@ -117,7 +117,7 @@ jobs:
           /tmp/ncp copy /tmp/serve-src ncp://127.0.0.1:9900/tmp/serve-dst \
             --ProgressStorePath /tmp/serve-progress
           kill $SERVE_PID 2>/dev/null || true
-          [ "$(cat /tmp/serve-dst/foo.txt)" = "hello-ncp" ] || { echo "FAIL: file mismatch"; exit 1; }
+          [ "$(cat /tmp/serve-dst/serve-src/foo.txt)" = "hello-ncp" ] || { echo "FAIL: file mismatch"; exit 1; }
       - name: Multi-source local copy
         run: |
           mkdir -p /tmp/ms-src1 /tmp/ms-src2

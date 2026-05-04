@@ -44,7 +44,7 @@ func main() {
 	copyCmd := &cobra.Command{
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
-		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Multiple sources are copied into subdirectories of dst named after each source's basename.",
+		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .",
 		Args:  cobra.MinimumNArgs(2),
 		RunE:  runCopy,
 	}
@@ -165,7 +165,7 @@ func main() {
 	cksumCmd := &cobra.Command{
 		Use:   "cksum <src> <dst>",
 		Short: "Verify data consistency between source and destination",
-		Long:  "Verify source and destination data consistency by comparing checksums. Both sides are read; supports any combination of local, OSS, and ncp:// (remote) endpoints.",
+		Long:  "Verify source and destination data consistency by comparing checksums. Both paths are explicit base directories; no automatic basename joining is performed. Supports any combination of local, OSS, and ncp:// (remote) endpoints.",
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runCksum,
 	}
@@ -751,8 +751,9 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 	return fl, nil
 }
 
-// setupCopyDepsMulti supports multiple source paths. Single source falls through
-// to the same path; multiple sources create a di.MultiSource.
+// setupCopyDepsMulti creates source/destination deps for copy.
+// All sources are wrapped in BasenamePrefixedSource so that every source
+// (single or multiple) gets its basename as a subdirectory under dst.
 func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
 	ossCfg := di.OSSConfig{
 		Endpoint: cfg.OSSEndpoint,
@@ -773,23 +774,18 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		}
 	}
 
-	if len(srcPaths) == 1 {
-		src, err = di.NewSourceWithOSS(srcPaths[0], ossCfg)
+	sources := make([]storage.Source, len(srcPaths))
+	basenames := make([]string, len(srcPaths))
+	for i, sp := range srcPaths {
+		sources[i], err = di.NewSourceWithOSS(sp, ossCfg)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
 		}
-	} else {
-		sources := make([]storage.Source, len(srcPaths))
-		for i, sp := range srcPaths {
-			sources[i], err = di.NewSourceWithOSS(sp, ossCfg)
-			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
-			}
-		}
-		src, err = di.NewMultiSource(sources)
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("create multi-source: %w", err)
-		}
+		basenames[i] = di.SourceBasename(sources[i], sp)
+	}
+	src, err = di.NewBasenamePrefixedSource(sources, basenames)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("create basename-prefixed source: %w", err)
 	}
 
 	var extraOpts []copy.JobOption

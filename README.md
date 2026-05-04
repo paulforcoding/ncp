@@ -39,9 +39,24 @@ ncp uses URL-style path prefixes to select the storage backend:
 - `ncp://` is destination-only (remote server receives pushes).
 - `oss://` paths require additional OSS parameters (`--endpoint`, `--region`, `--access-key-id`, `--access-key-secret`).
 
-### Multi-Source Copy
+### Path Semantics
 
-`ncp copy` accepts multiple source paths. Only **local paths** can be used as multi-source — mixing `oss://` or `ncp://` with other sources is not allowed.
+`ncp copy` places **every** source under its basename as a subdirectory of the destination. This applies to single-source and multi-source copies alike.
+
+```
+ncp copy /data/project /backup/
+# Result: /backup/project/...
+
+ncp copy /data/logs /data/configs /backup/
+# Result:
+#   /backup/logs/...
+#   /backup/configs/...
+
+ncp copy oss://my-bucket/ /backup/
+# Result: /backup/my-bucket/...
+```
+
+Only **local paths** can be used as multi-source — mixing `oss://` or `ncp://` with other sources is not allowed.
 
 ```bash
 # OK: multiple local sources
@@ -52,15 +67,6 @@ ncp copy /data/logs oss://bucket/prefix/ /backup/
 
 # ERROR: multiple OSS sources
 ncp copy oss://bucket-a/data/ oss://bucket-b/data/ /backup/
-```
-
-Each source's files appear under its directory name in the destination:
-
-```
-ncp copy /data/logs /data/configs /backup/
-# Result:
-#   /backup/logs/...
-#   /backup/configs/...
 ```
 
 ### OSS Configuration
@@ -115,26 +121,33 @@ ncp cksum /data/project oss://my-bucket/backup/ \
 ## Quick Start
 
 ```bash
-# Copy local directory to another local path
-ncp copy /data/project /backup/project
+# Copy local directory — result is /backup/project/...
+ncp copy /data/project /backup/
 
 # Copy multiple sources into one destination
 ncp copy /data/logs /data/configs /backup/
 
-# Copy to a remote ncp server
+# Copy to a remote ncp server — creates /backup/project/... on the server
 ncp serve --base /backup --listen :9900 &  # on the destination server
-ncp copy /data/project ncp://server:9900/backup/project
+ncp copy /data/project ncp://server:9900/backup/
 
-# Copy to Alibaba Cloud OSS
+# Copy to Alibaba Cloud OSS — creates backup/project/... under the bucket
 ncp copy /data/project oss://my-bucket/backup/ \
   --endpoint oss-cn-shenzhen.aliyuncs.com \
   --region cn-shenzhen \
   --access-key-id YOUR_AK \
   --access-key-secret YOUR_SK
 
-# Verify data consistency
+# Copy entire OSS bucket — creates /restore/my-bucket/...
+ncp copy oss://my-bucket/ /restore/ \
+  --endpoint oss-cn-shenzhen.aliyuncs.com \
+  --region cn-shenzhen \
+  --access-key-id YOUR_AK \
+  --access-key-secret YOUR_SK
+
+# Verify data consistency (both paths are explicit bases)
 ncp cksum /data/project /backup/project
-ncp cksum /data/project oss://my-bucket/backup/ --endpoint ... --region ...
+ncp cksum /data/project oss://my-bucket/backup/project --endpoint ... --region ...
 
 # Resume an interrupted task
 ncp resume task-20260502-143000-abcd
@@ -148,6 +161,8 @@ ncp copy --task task-20260502-143000-abcd
 ### `ncp copy <src>... <dst>`
 
 Copy files from one or more sources to a destination. Supports local, `ncp://`, and `oss://` schemes.
+
+**Path semantics:** Every source is placed under its basename as a subdirectory of `dst`. Both single-source and multi-source copies follow this rule.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -171,7 +186,7 @@ Copy files from one or more sources to a destination. Supports local, `ncp://`, 
 
 ### `ncp cksum <src> <dst>`
 
-Verify data consistency between source and destination by comparing checksums.
+Verify data consistency between source and destination by comparing checksums. Both `src` and `dst` are explicit base paths; no automatic basename joining is performed.
 
 | Flag | Default | Description |
 |------|---------|-------------|
