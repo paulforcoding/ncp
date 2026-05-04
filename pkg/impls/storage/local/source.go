@@ -22,6 +22,10 @@ func NewSource(base string) (*Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("local source abs path: %w", err)
 	}
+	clean := filepath.Clean(abs)
+	if clean == "/" {
+		return nil, fmt.Errorf("local source: copying the entire filesystem root is not allowed")
+	}
 	return &Source{base: abs}, nil
 }
 
@@ -64,9 +68,12 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 			return nil
 		}
 
-		// Skip the root directory itself (relPath is empty)
+		// Skip the root directory itself (relPath is empty), but allow single-file roots
 		if relPath == "" {
-			return nil
+			if info.IsDir() {
+				return nil
+			}
+			// root is a file: let it fall through to emit below with empty RelPath
 		}
 
 		uid, gid := fileOwner(info)

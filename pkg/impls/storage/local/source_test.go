@@ -177,3 +177,69 @@ func TestBase(t *testing.T) {
 		t.Fatalf("expected /tmp, got %s", src.Base())
 	}
 }
+
+func TestWalkSingleFile(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "single.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	src, err := NewSource(filePath)
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	var items []model.DiscoverItem
+	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
+		items = append(items, item)
+		return nil
+	}); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].RelPath != "" {
+		t.Fatalf("expected empty RelPath for single-file root, got %q", items[0].RelPath)
+	}
+	if items[0].FileType != model.FileRegular {
+		t.Fatalf("expected Regular, got %d", items[0].FileType)
+	}
+}
+
+func TestOpenSingleFile(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "single.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	src, err := NewSource(filePath)
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	r, err := src.Open("")
+	if err != nil {
+		t.Fatalf("open with empty relPath: %v", err)
+	}
+	defer r.Close()
+
+	buf := make([]byte, 5)
+	n, err := r.ReadAt(buf, 0)
+	if err != nil {
+		t.Fatalf("readat: %v", err)
+	}
+	if n != 5 || string(buf) != "hello" {
+		t.Fatalf("expected 'hello', got %q", string(buf[:n]))
+	}
+}
+
+func TestNewSourceRejectsRoot(t *testing.T) {
+	_, err := NewSource("/")
+	if err == nil {
+		t.Fatal("expected error for filesystem root")
+	}
+}

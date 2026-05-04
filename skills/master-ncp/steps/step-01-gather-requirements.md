@@ -17,9 +17,11 @@
 
 | 目标类型 | 示例 | 额外需要的信息 |
 |----------|------|----------------|
-| 本地 | `/backup/project` | 无 |
-| 远程 ncp | `ncp://server:9900/backup` | 确认远程 `ncp serve` 已运行 |
-| OSS | `oss://bucket/backup/` | endpoint、region、AK、SK |
+| 本地 | `/backup/` | 无。dst 是**父目录**，源会以其 basename 创建子目录 |
+| 远程 ncp | `ncp://server:9900/backup/` | 确认远程 `ncp serve` 已运行。dst 是父目录 |
+| OSS | `oss://bucket/backup/` | endpoint、region、AK、SK。dst 是父目录 |
+
+**路径语义：** `ncp copy /data/project /backup/` 的结果在 `/backup/project/...`，不是 `/backup/...`。dst 是父目录，basename 由 ncp 自动添加。如果用户说"复制到 /backup/project"，实际应给 dst = `/backup/`。
 
 **如果目标是 `ncp://`：**
 - 确认远程服务器已运行 `ncp serve`
