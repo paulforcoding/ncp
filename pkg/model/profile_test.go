@@ -12,6 +12,7 @@ func TestIsCloudScheme(t *testing.T) {
 		"":     false,
 		"ncp":  false,
 		"cos":  true,
+		"obs":  true,
 	}
 	for scheme, want := range cases {
 		if got := IsCloudScheme(scheme); got != want {
@@ -113,6 +114,27 @@ func TestValidate_UnknownProvider(t *testing.T) {
 	p := Profile{Provider: "weird"}
 	err := p.Validate("prod", "weird")
 	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestValidate_OBS_OK(t *testing.T) {
+	p := Profile{
+		Provider: "obs",
+		Endpoint: "obs.cn-north-4.myhuaweicloud.com",
+		Region:   "cn-north-4",
+		AK:       "a",
+		SK:       "b",
+	}
+	if err := p.Validate("prod", "obs"); err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+}
+
+func TestValidate_OBS_MissingEndpoint(t *testing.T) {
+	p := Profile{Provider: "obs", AK: "a", SK: "b", Region: "r"}
+	err := p.Validate("prod", "obs")
+	if err == nil || !strings.Contains(err.Error(), "all required") {
 		t.Fatalf("got %v", err)
 	}
 }

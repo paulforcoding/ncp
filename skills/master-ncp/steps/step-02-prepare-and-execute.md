@@ -19,7 +19,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
   [--no-skip-by-mtime]   # 仅当用户要禁用跳过时
 ```
 
-> 云凭据**不再通过 CLI flag 传递**。`oss://` URL 形如 `oss://<profile>@bucket/path/`, `cos://` URL 形如 `cos://<profile>@bucket/path/`,profile 在 `ncp_config.json` 的 `Profiles` 中已定义,ncp 在启动期自动解析。
+> 云凭据**不再通过 CLI flag 传递**。`oss://` URL 形如 `oss://<profile>@bucket/path/`, `cos://` URL 形如 `cos://<profile>@bucket/path/`, `obs://` URL 形如 `obs://<profile>@bucket/path/`,profile 在 `ncp_config.json` 的 `Profiles` 中已定义,ncp 在启动期自动解析。
 
 **注意 dst 语义：** `dst` 是**父目录**，源会以其 basename 创建子目录。例如 `ncp copy /data/project /backup/` 的结果在 `/backup/project/...`。
 
@@ -28,7 +28,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
 - 始终包含 `--ProgressStorePath` 和 `--FileLogOutput`，以便监控进度
 - 将 `--FileLogOutput` 设为已知文件路径（默认：`/tmp/ncp_file_log.json`）— 这是监控进度的关键
 - 将 `--FileLogInterval` 设为合理值（默认 5 秒即可；超大规模任务可用 10 以减少噪音）
-- OSS URL 缺 `<profile>@` → ncp 启动期立即报错。在执行前用 `ncp profile show <name>` 确认 profile 存在(详见步骤 1.2)。
+- OSS / COS / OBS URL 缺 `<profile>@` → ncp 启动期立即报错。在执行前用 `ncp profile show <name>` 确认 profile 存在(详见步骤 1.2)。
 
 ## 2.2 用户确认
 
@@ -143,7 +143,7 @@ df -h /tmp/ncp_progress_store /tmp/ncp_file_log.json 2>/dev/null | tail -n +2
 1. Kill ncp 进程
 2. 检查可能原因：
    - 网络 ncp:// 目标连接断开？→ 检查 `ncp serve` 是否还在运行
-   - OSS/COS 限流？→ 检查云存储 bucket 的 QPS/带宽限制
+   - OSS/COS/OBS 限流？→ 检查云存储 bucket 的 QPS/带宽限制
    - 目标磁盘 IO 阻塞？→ 检查目标端 iostat
 3. 自动恢复：降低 `--CopyParallelism`（减半），然后用 `ncp resume <taskID>` 恢复
 4. 如果降低并行数后仍卡住，报告给用户，询问是否继续尝试

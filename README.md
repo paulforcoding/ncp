@@ -11,7 +11,7 @@ ncp copies files to remote servers and cloud object storage with DB-backed progr
 - **High performance** — DB-tracked resume with minimal overhead; batched writes and delayed flush to avoid impacting copy throughput.
 - **Unique workflow** — Supports both copy-then-verify and verify-then-incremental-copy patterns, enabling efficient data synchronization.
 - **Agent-First output** — Structured NDJSON FileLog events (`file_complete`, `file_metadata_complete`, `progress_summary`) designed for programmatic consumption by agents and scripts.
-- **Multiple backends** — Local filesystem, remote ncp server (`ncp://`), Alibaba Cloud OSS (`oss://`), Tencent Cloud COS (`cos://`).
+- **Multiple backends** — Local filesystem, remote ncp server (`ncp://`), Alibaba Cloud OSS (`oss://`), Tencent Cloud COS (`cos://`), Huawei Cloud OBS (`obs://`).
 - **Checksum verification** — Independent `ncp cksum` command with MD5 or xxHash algorithms. Supports copy→cksum→copy cycles.
 
 ## Notes
@@ -35,10 +35,11 @@ ncp uses URL-style path prefixes to select the storage backend:
 | `ncp://` | `ncp://host:port/path` | No | Yes | `ncp://server:9900/backup` |
 | `oss://` | `oss://<profile>@bucket/prefix/` | Yes | Yes | `oss://prod@my-bucket/backup/` |
 | `cos://` | `cos://<profile>@bucket/prefix/` | Yes | Yes | `cos://prod@my-bucket-1250000000/backup/` |
+| `obs://` | `obs://<profile>@bucket/prefix/` | Yes | Yes | `obs://prod@my-bucket/backup/` |
 
 **Constraints:**
 - `ncp://` is destination-only (remote server receives pushes).
-- `oss://` and `cos://` require a `<profile>@` prefix referencing a profile defined in `ncp_config.json`. Local and `ncp://` URLs MUST NOT carry a profile.
+- `oss://`, `cos://`, and `obs://` require a `<profile>@` prefix referencing a profile defined in `ncp_config.json`. Local and `ncp://` URLs MUST NOT carry a profile.
 
 ### Path Semantics
 
@@ -57,29 +58,32 @@ ncp copy oss://prod@my-bucket/ /backup/
 # Result: /backup/my-bucket/...
 ```
 
-Only **local paths** can be used as multi-source — mixing `oss://`, `cos://`, or `ncp://` with other sources is not allowed. `oss://` and `cos://` cannot be mixed as multi-source either.
+Only **local paths** can be used as multi-source — mixing `oss://`, `cos://`, `obs://`, or `ncp://` with other sources is not allowed. `oss://`, `cos://`, and `obs://` cannot be mixed as multi-source either.
 
 ```bash
 # OK: multiple local sources
 ncp copy /data/logs /data/configs /backup/
 
-# ERROR: mixing local and OSS/COS sources
+# ERROR: mixing local and cloud sources
 ncp copy /data/logs oss://prod@bucket/prefix/ /backup/
 ncp copy /data/logs cos://prod@bucket/prefix/ /backup/
+ncp copy /data/logs obs://prod@bucket/prefix/ /backup/
 
-# ERROR: multiple OSS or COS sources
+# ERROR: multiple OSS, COS, or OBS sources
 ncp copy oss://prod@bucket-a/data/ oss://prod@bucket-b/data/ /backup/
 ncp copy cos://prod@bucket-a/data/ cos://prod@bucket-b/data/ /backup/
+ncp copy obs://prod@bucket-a/data/ obs://prod@bucket-b/data/ /backup/
 ```
 
 ### Profiles (cloud credentials)
 
-Cloud URLs reference a named profile via userinfo: `oss://<profile>@bucket/path/` or `cos://<profile>@bucket/path/`. Profiles are defined in `ncp_config.json` under the `Profiles` key. The same name can map to different accounts or regions, which is how cross-account migration is expressed:
+Cloud URLs reference a named profile via userinfo: `oss://<profile>@bucket/path/`, `cos://<profile>@bucket/path/`, or `obs://<profile>@bucket/path/`. Profiles are defined in `ncp_config.json` under the `Profiles` key. The same name can map to different accounts or regions, which is how cross-account migration is expressed:
 
 ```bash
 # Cross-account cloud copy: each side picks its own profile.
 ncp copy oss://acct-a@bkt-a/data/ oss://acct-b@bkt-b/data/
 ncp copy cos://acct-a@src-bucket/data/ cos://acct-b@dst-bucket/backup/
+ncp copy obs://acct-a@src-bucket/data/ obs://acct-b@dst-bucket/backup/
 ```
 
 `ncp_config.json` uses the layered search path (`/etc/ncp_config.json` → `~/ncp_config.json` → `./ncp_config.json`); later layers fully replace any profile they redefine (no field-level merging, so credentials never end up half new and half old).
@@ -106,6 +110,13 @@ ncp copy cos://acct-a@src-bucket/data/ cos://acct-b@dst-bucket/backup/
       "Region":   "ap-guangzhou",
       "AK":       "${env:NCP_COS_AK}",
       "SK":       "${env:NCP_COS_SK}"
+    },
+    "obs-prod": {
+      "Provider": "obs",
+      "Endpoint": "obs.cn-north-4.myhuaweicloud.com",
+      "Region":   "cn-north-4",
+      "AK":       "${env:NCP_OBS_AK}",
+      "SK":       "${env:NCP_OBS_SK}"
     }
   }
 }
@@ -113,13 +124,14 @@ ncp copy cos://acct-a@src-bucket/data/ cos://acct-b@dst-bucket/backup/
 
 **Rules:**
 - The profile referenced in a URL MUST exist in the loaded config; otherwise ncp fails fast at startup.
-- `Provider` MUST equal the URL scheme (`oss://prod@...` requires `Profiles.prod.Provider == "oss"`; `cos://prod@...` requires `Profiles.prod.Provider == "cos"`).
+- `Provider` MUST equal the URL scheme (`oss://prod@...` requires `Profiles.prod.Provider == "oss"`; `cos://prod@...` requires `Profiles.prod.Provider == "cos"`; `obs://prod@...` requires `Profiles.prod.Provider == "obs"`).
 - `${env:VAR}` placeholders in `AK`/`SK`/`Endpoint`/`Region` are resolved at load time. Plain credentials are accepted but force the config file to be `0600`; otherwise ncp refuses to start.
 - There is no fallback: cloud URLs without a profile, or with embedded passwords, are rejected.
 - COS `Endpoint` is optional. If omitted, it is auto-constructed as `https://<bucket>.cos.<region>.myqcloud.com`.
+- OBS `Endpoint` is required by profile validation, but if omitted at runtime the SDK falls back to `https://obs.<region>.myhuaweicloud.com`.
 
 **Constraints:**
-- `--cksum-algorithm` must be `md5` when OSS or COS is involved (cloud backends use Content-MD5 for integrity verification; `xxh64` is not supported).
+- `--cksum-algorithm` must be `md5` when OSS, COS, or OBS is involved (cloud backends use Content-MD5 for integrity verification; `xxh64` is not supported).
 - POSIX metadata (mode, uid, gid, mtime, symlink target, xattr) is preserved as custom object metadata with the `ncp-` prefix (e.g. `ncp-mode`, `ncp-uid`).
 
 Example:
@@ -148,6 +160,18 @@ ncp copy cos://acct-a@src-bucket/data/ cos://acct-b@dst-bucket/backup/
 
 # Verify COS data
 ncp cksum /data/project cos://cos-prod@my-bucket-1250000000/backup/
+
+# Local → OBS
+ncp copy /data/project obs://obs-prod@my-bucket/backup/
+
+# OBS → Local
+ncp copy obs://obs-prod@my-bucket/backup/ /data/restore/
+
+# OBS → OBS (cross-account)
+ncp copy obs://acct-a@src-bucket/data/ obs://acct-b@dst-bucket/backup/
+
+# Verify OBS data
+ncp cksum /data/project obs://obs-prod@my-bucket/backup/
 ```
 
 ## Quick Start
@@ -175,10 +199,17 @@ ncp copy /data/project cos://cos-prod@my-bucket-1250000000/backup/
 # Copy entire COS bucket — creates /restore/my-bucket/...
 ncp copy cos://cos-prod@my-bucket-1250000000/ /restore/
 
+# Copy to Huawei Cloud OBS — creates backup/project/... under the bucket
+ncp copy /data/project obs://obs-prod@my-bucket/backup/
+
+# Copy entire OBS bucket — creates /restore/my-bucket/...
+ncp copy obs://obs-prod@my-bucket/ /restore/
+
 # Verify data consistency (both paths are explicit bases)
 ncp cksum /data/project /backup/project
 ncp cksum /data/project oss://prod@my-bucket/backup/project
 ncp cksum /data/project cos://cos-prod@my-bucket-1250000000/backup/project
+ncp cksum /data/project obs://obs-prod@my-bucket/backup/project
 
 # Resume an interrupted task
 ncp resume task-20260502-143000-abcd
@@ -191,7 +222,7 @@ ncp copy --task task-20260502-143000-abcd
 
 ### `ncp copy <src>... <dst>`
 
-Copy files from one or more sources to a destination. Supports local, `ncp://`, `oss://`, and `cos://` schemes.
+Copy files from one or more sources to a destination. Supports local, `ncp://`, `oss://`, `cos://`, and `obs://` schemes.
 
 **Path semantics:** Every source is placed under its basename as a subdirectory of `dst`. Both single-source and multi-source copies follow this rule.
 

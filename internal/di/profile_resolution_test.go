@@ -106,3 +106,40 @@ func TestNewDestination_OSSWithoutProfile_FailsFast(t *testing.T) {
 		t.Fatalf("expected fail-fast on missing profile, got %v", err)
 	}
 }
+
+func TestResolveProfile_OBSSuccess(t *testing.T) {
+	u, _ := ParsePath("obs://prod@bkt/path")
+	profiles := map[string]model.Profile{
+		"prod": {Provider: "obs", Endpoint: "obs.cn-north-4.myhuaweicloud.com",
+			Region: "cn-north-4", AK: "a", SK: "b"},
+	}
+	p, err := resolveProfile(u, profiles)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if p == nil || p.AK != "a" || p.SK != "b" {
+		t.Fatalf("unexpected profile: %+v", p)
+	}
+}
+
+func TestResolveProfile_OBSWithoutUserinfo(t *testing.T) {
+	u, _ := ParsePath("obs://bkt/path")
+	_, err := resolveProfile(u, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires a profile") {
+		t.Fatalf("expected 'requires a profile' error, got %v", err)
+	}
+}
+
+func TestNewSource_OBSWithoutProfile_FailsFast(t *testing.T) {
+	_, err := NewSource("obs://bkt/path", nil)
+	if err == nil || !strings.Contains(err.Error(), "requires a profile") {
+		t.Fatalf("expected fail-fast on missing profile, got %v", err)
+	}
+}
+
+func TestNewDestination_OBSWithoutProfile_FailsFast(t *testing.T) {
+	_, err := NewDestination("obs://bkt/path", DestConfig{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires a profile") {
+		t.Fatalf("expected fail-fast on missing profile, got %v", err)
+	}
+}

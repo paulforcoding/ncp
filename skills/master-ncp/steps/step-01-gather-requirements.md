@@ -9,6 +9,7 @@
 - **本地路径**：如 `/data/project`、`/home/user/docs`
 - **OSS 路径**：如 `oss://prod@my-bucket/data/`(必须带 `<profile>@` 前缀,见 1.2)
 - **COS 路径**：如 `cos://prod@my-bucket-1250000000/data/`(必须带 `<profile>@` 前缀,见 1.2)
+- **OBS 路径**：如 `obs://prod@my-bucket/data/`(必须带 `<profile>@` 前缀,见 1.2)
 
 如果用户提供本地路径，先验证路径是否存在。
 
@@ -22,6 +23,7 @@
 | 远程 ncp | `ncp://server:9900/backup/` | 确认远程 `ncp serve` 已运行。dst 是父目录 |
 | OSS | `oss://prod@bucket/backup/` | URL 必须带 `<profile>@`,profile 在 `ncp_config.json` 中已定义。dst 是父目录 |
 | COS | `cos://prod@bucket-1250000000/backup/` | URL 必须带 `<profile>@`,profile 在 `ncp_config.json` 中已定义。dst 是父目录 |
+| OBS | `obs://prod@bucket/backup/` | URL 必须带 `<profile>@`,profile 在 `ncp_config.json` 中已定义。dst 是父目录 |
 
 **路径语义：** `ncp copy /data/project /backup/` 的结果在 `/backup/project/...`，不是 `/backup/...`。dst 是父目录，basename 由 ncp 自动添加。如果用户说"复制到 /backup/project"，实际应给 dst = `/backup/`。
 
@@ -29,19 +31,20 @@
 - 确认远程服务器已运行 `ncp serve`
 - 提示："远程 ncp 服务器是否已启动？如未启动，需先运行：`ncp serve --base <dir> --listen :9900`"
 
-**如果源或目标是 `oss://` 或 `cos://`：**
+**如果源或目标是 `oss://`、`cos://` 或 `obs://`：**
 
 不要再询问 endpoint/region/AK/SK,这些已经从配置中读取。改为按以下流程确认 profile:
 
-1. 询问用户预期使用哪个 profile 名(例如 "prod"、"dr"、"acct-a"、"cos-prod")。如果用户不确定,先运行 `ncp profile list` 列出当前生效 profile,再让用户挑选。
-2. 用 `ncp profile show <name>` 验证该 profile 已存在且字段齐全(Provider/Region/AK/SK 都有值,Endpoint 对 OSS 必填、对 COS 可选,AK/SK 会脱敏显示首尾各 4 位)。
+1. 询问用户预期使用哪个 profile 名(例如 "prod"、"dr"、"acct-a"、"cos-prod"、"obs-prod")。如果用户不确定,先运行 `ncp profile list` 列出当前生效 profile,再让用户挑选。
+2. 用 `ncp profile show <name>` 验证该 profile 已存在且字段齐全(Provider/Region/AK/SK 都有值,Endpoint 对 OSS/OBS 必填、对 COS 可选,AK/SK 会脱敏显示首尾各 4 位)。
 3. 如果 `ncp profile show` 报 "not found":
-   - 解释 profile 必须先在 `ncp_config.json` 的 `Profiles` 下定义,字段名为 `Provider`/`Endpoint`/`Region`/`AK`/`SK`。`oss://` 要求 `Provider == "oss"`; `cos://` 要求 `Provider == "cos"`。
+   - 解释 profile 必须先在 `ncp_config.json` 的 `Profiles` 下定义,字段名为 `Provider`/`Endpoint`/`Region`/`AK`/`SK`。`oss://` 要求 `Provider == "oss"`; `cos://` 要求 `Provider == "cos"`; `obs://` 要求 `Provider == "obs"`。
    - 引导用户写入合适的 config(`/etc/ncp_config.json`、`~/ncp_config.json`、`./ncp_config.json` 任选一层),或在最高优先级层临时写入。
    - 推荐用 `${env:VAR}` 占位符引用环境变量,避免明文密钥落盘;若必须明文,提醒文件 mode 必须为 `0600`,否则 ncp 拒绝启动。
    - COS 的 `Endpoint` 可选,如果不填会从 `Region+Bucket` 自动构造为 `https://<bucket>.cos.<region>.myqcloud.com`。
+   - OBS 的 `Endpoint` 在 profile 校验阶段为必填,但运行期若缺省 SDK 会回退到 `https://obs.<region>.myhuaweicloud.com`。
    - 用户写完后,再次执行 `ncp profile show <name>` 验证。
-4. 跨账号场景下分别确认 src/dst 各自要用哪个 profile,URL 形如 `oss://acct-a@src/...`、`oss://acct-b@dst/...` 或 `cos://acct-a@src/...`、`cos://acct-b@dst/...`。
+4. 跨账号场景下分别确认 src/dst 各自要用哪个 profile,URL 形如 `oss://acct-a@src/...`、`oss://acct-b@dst/...`,`cos://acct-a@src/...`、`cos://acct-b@dst/...` 或 `obs://acct-a@src/...`、`obs://acct-b@dst/...`。
 
 **一次性询问 profile 名,不要逐字段追问 endpoint/region/AK/SK。这些信息从配置文件读,不再走 CLI。**
 
@@ -55,13 +58,14 @@
 
 1. **文件数量级** — 大约多少文件？（<1K / 1K~100K / 100K~1M / >1M）
 2. **是否有大文件** — 是否有超过 100MB 的文件？
-3. **源端存储介质** — SSD / HDD / OSS？
-4. **目标端存储介质** — SSD / HDD / ncp:// / OSS？
+3. **源端存储介质** — SSD / HDD / OSS / COS / OBS？
+4. **目标端存储介质** — SSD / HDD / ncp:// / OSS / COS / OBS？
 
 如果用户不清楚，根据源/目标路径合理推断：
 - 本地路径 → 可执行 `lsblk -d -o name,rota` 或 `diskutil info` 判断 SSD/HDD
 - `oss://` → OSS
 - `cos://` → COS
+- `obs://` → OBS
 - `ncp://` → 网络目标
 
 ### 1.3.2 查询机器配置
@@ -85,7 +89,7 @@ vm_stat | head -10 2>/dev/null || free -m 2>/dev/null || echo 4096
 | 源介质 | 目标介质 | 文件数 < 1K | 文件数 ≥ 1K | 最大值 |
 |--------|---------|-------------|-------------|--------|
 | SSD | SSD | 2 | 4~cpu×2 | cpu×2 |
-| SSD | HDD/网络/OSS/COS | 2 | 2~4 | 4 |
+| SSD | HDD/网络/OSS/OBS | 2 | 2~4 | 4 |
 | HDD | 任意 | 2 | 2 | 2 |
 | 任意 | ncp:// | 2 | 4~8 | 8 |
 | 任意 | COS | 2 | 2~4 | 4 |

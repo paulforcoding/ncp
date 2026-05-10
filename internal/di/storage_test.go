@@ -121,3 +121,45 @@ func TestParseOSSURL(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePath_OBS(t *testing.T) {
+	u, err := ParsePath("obs://mybucket/path/to/dir")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if u.Scheme != "obs" {
+		t.Fatalf("scheme: got %q, want %q", u.Scheme, "obs")
+	}
+	if u.Host != "mybucket" {
+		t.Fatalf("host: got %q, want %q", u.Host, "mybucket")
+	}
+}
+
+func TestParseOBSURL(t *testing.T) {
+	tests := []struct {
+		raw        string
+		wantBucket string
+		wantPrefix string
+	}{
+		{"obs://mybucket/path/to/dir", "mybucket", "path/to/dir/"},
+		{"obs://mybucket/", "mybucket", ""},
+		{"obs://mybucket", "mybucket", ""},
+		{"obs://mybucket/deep/nested/path", "mybucket", "deep/nested/path/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			u, err := ParsePath(tt.raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			bucket, prefix := parseOBSURL(u)
+			if bucket != tt.wantBucket {
+				t.Fatalf("bucket: got %q, want %q", bucket, tt.wantBucket)
+			}
+			if prefix != tt.wantPrefix {
+				t.Fatalf("prefix: got %q, want %q", prefix, tt.wantPrefix)
+			}
+		})
+	}
+}

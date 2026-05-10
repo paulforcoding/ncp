@@ -22,7 +22,7 @@ type Profile struct {
 var CloudSchemes = map[string]struct{}{
 	"oss": {},
 	"cos": {},
-	// "obs": {},
+	"obs": {},
 	// "s3":  {},
 }
 
@@ -71,6 +71,10 @@ func (p Profile) Validate(name, scheme string) error {
 	case "cos":
 		if p.AK == "" || p.SK == "" || p.Region == "" {
 			return fmt.Errorf("profile %q (cos): AK/SK/Region are all required", name)
+		}
+	case "obs":
+		if p.AK == "" || p.SK == "" || p.Endpoint == "" || p.Region == "" {
+			return fmt.Errorf("profile %q (obs): AK/SK/Endpoint/Region are all required", name)
 		}
 	default:
 		return fmt.Errorf("profile %q: unknown provider %q", name, p.Provider)

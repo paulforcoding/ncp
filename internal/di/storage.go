@@ -9,6 +9,7 @@ import (
 	"github.com/zp001/ncp/pkg/impls/storage/aliyun"
 	"github.com/zp001/ncp/pkg/impls/storage/cos"
 	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/impls/storage/obs"
 	"github.com/zp001/ncp/pkg/impls/storage/remote"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -58,6 +59,19 @@ func NewSource(srcPath string, profiles map[string]model.Profile) (storage.Sourc
 			return nil, fmt.Errorf("cos: bucket name required in URL (cos://<profile>@bucket/prefix)")
 		}
 		return cos.NewSource(cos.SourceConfig{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
+	case "obs":
+		bucket, prefix := parseOBSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("obs: bucket name required in URL (obs://<profile>@bucket/prefix)")
+		}
+		return obs.NewSource(obs.SourceConfig{
 			Endpoint: prof.Endpoint,
 			Region:   prof.Region,
 			AK:       prof.AK,
@@ -116,6 +130,19 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			return nil, fmt.Errorf("cos: bucket name required in URL (cos://<profile>@bucket/prefix)")
 		}
 		return cos.NewDestination(cos.Config{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
+	case "obs":
+		bucket, prefix := parseOBSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("obs: bucket name required in URL (obs://<profile>@bucket/prefix)")
+		}
+		return obs.NewDestination(obs.Config{
 			Endpoint: prof.Endpoint,
 			Region:   prof.Region,
 			AK:       prof.AK,
@@ -183,6 +210,17 @@ func parseOSSURL(u *url.URL) (bucket, prefix string) {
 // parseCOSURL extracts bucket and prefix from a cos:// URL.
 // cos://prod@mybucket-1250000000/path/to/dir → bucket="mybucket-1250000000", prefix="path/to/dir/"
 func parseCOSURL(u *url.URL) (bucket, prefix string) {
+	bucket = u.Host
+	prefix = strings.TrimPrefix(u.Path, "/")
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return bucket, prefix
+}
+
+// parseOBSURL extracts bucket and prefix from an obs:// URL.
+// obs://prod@mybucket/path/to/dir → bucket="mybucket", prefix="path/to/dir/"
+func parseOBSURL(u *url.URL) (bucket, prefix string) {
 	bucket = u.Host
 	prefix = strings.TrimPrefix(u.Path, "/")
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
