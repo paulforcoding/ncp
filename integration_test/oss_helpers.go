@@ -223,7 +223,7 @@ type failAfterNShared struct {
 	failAt int
 }
 
-func (d *failAfterNShared) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *failAfterNShared) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
 	d.mu.Lock()
 	*d.count++
 	if *d.count > d.failAt {
@@ -252,7 +252,7 @@ type failAfterNOpenShared struct {
 	failAt int
 }
 
-func (s *failAfterNOpenShared) Open(relPath string) (storage.Reader, error) {
+func (s *failAfterNOpenShared) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	s.mu.Lock()
 	*s.count++
 	if *s.count > s.failAt {
@@ -260,7 +260,7 @@ func (s *failAfterNOpenShared) Open(relPath string) (storage.Reader, error) {
 		return nil, fmt.Errorf("simulated open error after %d files", s.failAt)
 	}
 	s.mu.Unlock()
-	return s.Source.Open(relPath)
+	return s.Source.Open(ctx, relPath)
 }
 
 func newFailAfterNOpenShared(src storage.Source, failAt int) *failAfterNOpenShared {

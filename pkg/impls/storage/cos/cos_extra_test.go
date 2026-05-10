@@ -3,6 +3,7 @@ package cos
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"errors"
 	"strings"
 	"testing"
@@ -174,27 +175,10 @@ func TestWithRetryResult_ContextCanceled(t *testing.T) {
 
 // --- Small-file writer state-machine tests (no HTTP) ---
 
-func TestSmallFileWriter_BufferAccumulates(t *testing.T) {
-	cfg := DefaultRetryConfig()
-	w := newSmallFileWriter(context.Background(), nil, "k", nil, cfg)
+func TestSmallFileWriter_WriteAfterCommit(t *testing.T) {
+	w := &smallFileWriter{state: stateCommitted, md5: md5.New()}
 
-	if _, err := w.WriteAt([]byte("hello "), 0); err != nil {
-		t.Fatalf("WriteAt: %v", err)
-	}
-	if _, err := w.WriteAt([]byte("world"), 6); err != nil {
-		t.Fatalf("WriteAt: %v", err)
-	}
-	if got := w.buf.String(); got != "hello world" {
-		t.Errorf("buf = %q, want %q", got, "hello world")
-	}
-}
-
-func TestSmallFileWriter_WriteAfterClose(t *testing.T) {
-	cfg := DefaultRetryConfig()
-	w := newSmallFileWriter(context.Background(), nil, "k", nil, cfg)
-	w.closed = true
-
-	_, err := w.WriteAt([]byte("x"), 0)
+	_, err := w.Write(context.Background(), []byte("x"))
 	if err == nil {
 		t.Fatal("expected error writing to closed writer")
 	}
@@ -203,18 +187,10 @@ func TestSmallFileWriter_WriteAfterClose(t *testing.T) {
 	}
 }
 
-func TestSmallFileWriter_SyncIsNoop(t *testing.T) {
-	w := newSmallFileWriter(context.Background(), nil, "k", nil, DefaultRetryConfig())
-	if err := w.Sync(); err != nil {
-		t.Errorf("Sync should be no-op, got %v", err)
-	}
-}
-
-func TestSmallFileWriter_DoubleCloseIsNoop(t *testing.T) {
-	w := newSmallFileWriter(context.Background(), nil, "k", nil, DefaultRetryConfig())
-	w.closed = true
-	if err := w.Close(context.Background(), nil); err != nil {
-		t.Errorf("second Close should return nil, got %v", err)
+func TestSmallFileWriter_DoubleCommitIsNoop(t *testing.T) {
+	w := &smallFileWriter{state: stateCommitted, md5: md5.New()}
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Errorf("second Commit should return nil, got %v", err)
 	}
 }
 

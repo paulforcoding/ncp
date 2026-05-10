@@ -33,7 +33,7 @@ func NewSource(base string) (*Source, error) {
 // (filepath.Walk is DFS), guaranteeing DB key lexicographic order
 // is shallow-to-deep. Reverse iteration = deep-to-shallow
 // (used by EnsureDirMtime).
-func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	return filepath.Walk(s.base, func(path string, info fs.FileInfo, err error) error {
 		// Respect context cancellation
 		select {
@@ -78,15 +78,16 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 
 		uid, gid := fileOwner(info)
 
-		item := model.DiscoverItem{
-			SrcBase:  s.base,
+		item := storage.DiscoverItem{
 			RelPath:  relPath,
 			FileType: ft,
-			FileSize: info.Size(),
-			Mode:     uint32(mode.Perm()),
-			Uid:      uid,
-			Gid:      gid,
-			Mtime:    info.ModTime().UnixNano(),
+			Size:     info.Size(),
+			Attr: storage.FileAttr{
+				Mode:  mode.Perm(),
+				Uid:   uid,
+				Gid:   gid,
+				Mtime: info.ModTime(),
+			},
 		}
 
 		// Read symlink target at walk time so Replicator doesn't need Source access
@@ -95,21 +96,38 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 			if err != nil {
 				return nil // skip unreadable symlinks
 			}
-			item.LinkTarget = target
+			item.Attr.SymlinkTarget = target
 		}
 
-		return fn(item)
+		return fn(ctx, item)
 	})
 }
 
-// Open opens a local file for reading (pread semantics).
-func (s *Source) Open(relPath string) (storage.Reader, error) {
+// Open opens a local file for reading.
+func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	fullPath := filepath.Join(s.base, relPath)
 	f, err := os.Open(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("local open %s: %w", relPath, err)
 	}
-	return &Reader{f: f}, nil
+
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("local open stat %s: %w", relPath, err)
+	}
+
+	uid, gid := fileOwner(info)
+	return &Reader{
+		f:    f,
+		size: info.Size(),
+		attr: storage.FileAttr{
+			Mode:  info.Mode().Perm(),
+			Uid:   uid,
+			Gid:   gid,
+			Mtime: info.ModTime(),
+		},
+	}, nil
 }
 
 // toRelPath converts an absolute path to a relative path from base,
@@ -126,16 +144,31 @@ func (s *Source) toRelPath(absPath string) (string, error) {
 }
 
 // Base returns the source base directory.
-func (s *Source) Base() string { return s.base }
+func (s *Source) URI() string { return s.base }
 
-// Restat rebuilds a DiscoverItem by stat-ing the source path.
+// Connect is a no-op for local sources.
+func (s *Source) Connect(ctx context.Context) error { return nil }
+
+// Close is a no-op for local sources.
+func (s *Source) Close(ctx context.Context) error { return nil }
+
+// BeginTask is a no-op for local sources.
+func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for local sources.
+func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+// Stat rebuilds a DiscoverItem by stat-ing the source path.
 // Used by Walker.dispatchRemaining to re-enqueue discovered items
 // whose full metadata wasn't stored in DB.
-func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
+func (s *Source) Stat(_ context.Context, relPath string) (storage.DiscoverItem, error) {
 	fullPath := filepath.Join(s.base, relPath)
 	info, err := os.Lstat(fullPath)
 	if err != nil {
-		return model.DiscoverItem{}, fmt.Errorf("local restat %s: %w", relPath, err)
+		if os.IsNotExist(err) {
+			return storage.DiscoverItem{}, fmt.Errorf("local stat %s: %w", relPath, storage.ErrNotFound)
+		}
+		return storage.DiscoverItem{}, fmt.Errorf("local stat %s: %w", relPath, err)
 	}
 
 	mode := info.Mode()
@@ -151,23 +184,24 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 
 	uid, gid := fileOwner(info)
 
-	item := model.DiscoverItem{
-		SrcBase:  s.base,
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: info.Size(),
-		Mode:     uint32(mode.Perm()),
-		Uid:      uid,
-		Gid:      gid,
-		Mtime:    info.ModTime().UnixNano(),
+		Size:     info.Size(),
+		Attr: storage.FileAttr{
+			Mode:  mode.Perm(),
+			Uid:   uid,
+			Gid:   gid,
+			Mtime: info.ModTime(),
+		},
 	}
 
 	if ft == model.FileSymlink {
 		target, err := os.Readlink(fullPath)
 		if err != nil {
-			return model.DiscoverItem{}, fmt.Errorf("local restat readlink %s: %w", relPath, err)
+			return storage.DiscoverItem{}, fmt.Errorf("local stat readlink %s: %w", relPath, err)
 		}
-		item.LinkTarget = target
+		item.Attr.SymlinkTarget = target
 	}
 
 	return item, nil

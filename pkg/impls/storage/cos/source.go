@@ -2,12 +2,15 @@ package cos
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tencentyun/cos-go-sdk-v5"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -63,7 +66,7 @@ func NewSource(cfg SourceConfig) (*Source, error) {
 }
 
 // Walk traverses all objects under prefix using Bucket.Get pagination.
-func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	var marker string
 	for {
 		result, _, err := s.client.Bucket.Get(ctx, &cos.BucketGetOptions{
@@ -91,7 +94,7 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 				continue
 			}
 
-			if err := fn(item); err != nil {
+			if err := fn(ctx, item); err != nil {
 				return err
 			}
 		}
@@ -110,37 +113,47 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 	return nil
 }
 
-// Open opens a COS object for reading with Range support.
-func (s *Source) Open(relPath string) (storage.Reader, error) {
+// Open opens a COS object for streaming read.
+func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	key := s.prefix + relPath
 
-	resp, err := s.client.Object.Head(context.Background(), key, nil)
+	resp, err := s.client.Object.Get(ctx, key, nil)
 	if err != nil {
-		return nil, fmt.Errorf("cos head %s: %w", relPath, err)
+		return nil, fmt.Errorf("cos get %s: %w", relPath, err)
 	}
 
 	size, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
 	metadata := extractMetadata(resp.Header)
 
+	attr := storage.FileAttr{}
+	attr.Mode = parseMode(metadata[metaMode])
+	attr.Uid = parseInt(metadata[metaUID])
+	attr.Gid = parseInt(metadata[metaGID])
+	if mtime := parseInt64(metadata[metaMtime]); mtime != 0 {
+		attr.Mtime = time.Unix(0, mtime)
+	}
+	if attr.Mode == 0 {
+		attr.Mode = 0o644
+	}
+
 	return &Reader{
-		client:   s.client,
-		key:      key,
-		size:     size,
-		metadata: metadata,
+		body: resp.Body,
+		size: size,
+		attr: attr,
 	}, nil
 }
 
-// Restat rebuilds a DiscoverItem by heading the object.
-func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
+// Stat rebuilds a DiscoverItem by heading the object.
+func (s *Source) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := s.prefix + relPath
 
-	resp, err := s.client.Object.Head(context.Background(), key, nil)
+	resp, err := s.client.Object.Head(ctx, key, nil)
 	if err != nil {
 		// Directory marker objects have a trailing "/" in the key.
 		dirKey := key + "/"
-		resp, err = s.client.Object.Head(context.Background(), dirKey, nil)
+		resp, err = s.client.Object.Head(ctx, dirKey, nil)
 		if err != nil {
-			return model.DiscoverItem{}, fmt.Errorf("cos restat %s: %w", relPath, err)
+			return storage.DiscoverItem{}, fmt.Errorf("cos stat %s: %w", relPath, err)
 		}
 		key = dirKey
 	}
@@ -160,86 +173,100 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 	}
 
 	size, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
-	etag := strings.ToLower(strings.Trim(resp.Header.Get("ETag"), `"`))
 
-	item := model.DiscoverItem{
-		SrcBase:  "cos://" + s.bucket + "/" + s.prefix,
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: size,
-		ETag:     etag,
+		Size:     size,
 	}
+	item.Checksum, item.Algorithm = parseETag(resp.Header.Get("ETag"))
 
-	item.Mode = parseMode(metadata[metaMode])
-	item.Uid = parseInt(metadata[metaUID])
-	item.Gid = parseInt(metadata[metaGID])
+	item.Attr.Mode = parseMode(metadata[metaMode])
+	item.Attr.Uid = parseInt(metadata[metaUID])
+	item.Attr.Gid = parseInt(metadata[metaGID])
 	if ft == model.FileSymlink {
-		item.LinkTarget = metadata[metaSymlinkTarget]
+		item.Attr.SymlinkTarget = metadata[metaSymlinkTarget]
 	}
-	item.Mtime = parseInt64(metadata[metaMtime])
+	if mtime := parseInt64(metadata[metaMtime]); mtime != 0 {
+		item.Attr.Mtime = time.Unix(0, mtime)
+	}
 
-	if item.Mode == 0 {
+	if item.Attr.Mode == 0 {
 		if isDir {
-			item.Mode = 0o755
+			item.Attr.Mode = 0o755
 		} else {
-			item.Mode = 0o644
+			item.Attr.Mode = 0o644
 		}
 	}
 
 	return item, nil
 }
 
-func (s *Source) Base() string {
+func (s *Source) URI() string {
 	return "cos://" + s.bucket + "/" + s.prefix
 }
 
-func (s *Source) objectToItem(key, relPath string, size int64, etag string) (model.DiscoverItem, error) {
+// Connect is a no-op for COS sources (client is initialized in constructor).
+func (s *Source) Connect(ctx context.Context) error { return nil }
+
+// Close is a no-op for COS sources.
+func (s *Source) Close(ctx context.Context) error { return nil }
+
+// BeginTask is a no-op for COS sources.
+func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for COS sources.
+func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+func (s *Source) objectToItem(key, relPath string, size int64, etag string) (storage.DiscoverItem, error) {
 	isDir := strings.HasSuffix(key, "/")
 
 	if isDir {
-		item := model.DiscoverItem{
-			SrcBase:  "cos://" + s.bucket + "/" + s.prefix,
+		item := storage.DiscoverItem{
 			RelPath:  strings.TrimSuffix(relPath, "/"),
 			FileType: model.FileDir,
-			FileSize: 0,
+			Size:     0,
 		}
 
 		resp, err := s.client.Object.Head(context.Background(), key, nil)
 		if err == nil {
 			metadata := extractMetadata(resp.Header)
-			item.Mode = parseMode(metadata[metaMode])
-			item.Uid = parseInt(metadata[metaUID])
-			item.Gid = parseInt(metadata[metaGID])
-			item.Mtime = parseInt64(metadata[metaMtime])
+			item.Attr.Mode = parseMode(metadata[metaMode])
+			item.Attr.Uid = parseInt(metadata[metaUID])
+			item.Attr.Gid = parseInt(metadata[metaGID])
+			if mtime := parseInt64(metadata[metaMtime]); mtime != 0 {
+				item.Attr.Mtime = time.Unix(0, mtime)
+			}
 		}
-		if item.Mode == 0 {
-			item.Mode = 0o755
+		if item.Attr.Mode == 0 {
+			item.Attr.Mode = 0o755
 		}
 		return item, nil
 	}
 
-	item := model.DiscoverItem{
-		SrcBase:  "cos://" + s.bucket + "/" + s.prefix,
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: model.FileRegular,
-		FileSize: size,
-		ETag:     strings.ToLower(strings.Trim(etag, `"`)),
+		Size:     size,
 	}
+	item.Checksum, item.Algorithm = parseETag(etag)
 
 	resp, err := s.client.Object.Head(context.Background(), key, nil)
 	if err == nil {
 		metadata := extractMetadata(resp.Header)
-		item.Mode = parseMode(metadata[metaMode])
-		item.Uid = parseInt(metadata[metaUID])
-		item.Gid = parseInt(metadata[metaGID])
-		item.Mtime = parseInt64(metadata[metaMtime])
+		item.Attr.Mode = parseMode(metadata[metaMode])
+		item.Attr.Uid = parseInt(metadata[metaUID])
+		item.Attr.Gid = parseInt(metadata[metaGID])
+		if mtime := parseInt64(metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if metadata[metaSymlinkTarget] != "" {
 			item.FileType = model.FileSymlink
-			item.LinkTarget = metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = metadata[metaSymlinkTarget]
 		}
 	}
-	if item.Mode == 0 {
-		item.Mode = 0o644
+	if item.Attr.Mode == 0 {
+		item.Attr.Mode = 0o644
 	}
 
 	return item, nil
@@ -247,50 +274,30 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 
 // --- Reader ---
 
-// Reader implements storage.Reader for COS objects using HTTP Range requests.
+// Reader implements storage.FileReader for COS objects using a streaming GetObject body.
 type Reader struct {
-	client   *cos.Client
-	key      string
-	size     int64
-	metadata map[string]string
+	body io.ReadCloser
+	size int64
+	attr storage.FileAttr
 }
 
-var _ storage.Reader = (*Reader)(nil)
+var _ storage.FileReader = (*Reader)(nil)
 
-func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
-	if off >= r.size {
-		return 0, io.EOF
-	}
-
-	end := off + int64(len(p)) - 1
-	if end >= r.size {
-		end = r.size - 1
-	}
-
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
-
-	resp, err := r.client.Object.Get(context.Background(), r.key, &cos.ObjectGetOptions{
-		Range: rangeHeader,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("cos get range %s [%d-%d]: %w", r.key, off, end, err)
-	}
-	defer resp.Body.Close()
-
-	n, err := io.ReadFull(resp.Body, p)
-	if err == io.ErrUnexpectedEOF {
-		return n, nil
-	}
-	if err == io.EOF && n == 0 {
-		return 0, io.EOF
-	}
-	return n, err
+// Read reads up to len(p) bytes from the object body.
+func (r *Reader) Read(ctx context.Context, p []byte) (int, error) {
+	return r.body.Read(p)
 }
 
-func (r *Reader) Close() error { return nil }
+// Close closes the underlying object body.
+func (r *Reader) Close(ctx context.Context) error {
+	return r.body.Close()
+}
 
-// Metadata returns the object's custom metadata headers.
-func (r *Reader) Metadata() map[string]string { return r.metadata }
+// Size returns the object content length.
+func (r *Reader) Size() int64 { return r.size }
+
+// Attr returns the object metadata.
+func (r *Reader) Attr() storage.FileAttr { return r.attr }
 
 // --- Helpers ---
 
@@ -306,7 +313,22 @@ func extractMetadata(h http.Header) map[string]string {
 	return meta
 }
 
-func parseMode(s string) uint32 {
+// parseETag converts a COS ETag string into (checksum []byte, algorithm string).
+func parseETag(etag string) ([]byte, string) {
+	etag = strings.ToLower(strings.Trim(etag, `"`))
+	if etag == "" {
+		return nil, ""
+	}
+	if strings.Contains(etag, "-") {
+		return []byte(etag), "etag-multipart"
+	}
+	if b, err := hex.DecodeString(etag); err == nil {
+		return b, "etag-md5"
+	}
+	return []byte(etag), "etag-multipart"
+}
+
+func parseMode(s string) os.FileMode {
 	if s == "" {
 		return 0
 	}
@@ -314,7 +336,7 @@ func parseMode(s string) uint32 {
 	if err != nil {
 		return 0
 	}
-	return uint32(m)
+	return os.FileMode(m)
 }
 
 func parseInt(s string) int {

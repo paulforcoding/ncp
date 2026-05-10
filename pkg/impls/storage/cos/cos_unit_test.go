@@ -2,16 +2,20 @@ package cos
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 )
 
 func TestParseMode(t *testing.T) {
 	tests := []struct {
 		input string
-		want  uint32
+		want  os.FileMode
 	}{
 		{"0755", 0755},
 		{"0644", 0644},
@@ -63,56 +67,87 @@ func TestParseInt64(t *testing.T) {
 	}
 }
 
-func TestRetryable(t *testing.T) {
+func TestMapError(t *testing.T) {
 	tests := []struct {
-		errMsg string
-		want   bool
+		input string
+		want  error
 	}{
-		{"StatusCode:429", true},
-		{"StatusCode:503", true},
-		{"StatusCode:500", true},
-		{"StatusCode:403", false},
-		{"StatusCode:404", false},
-		{"StatusCode:400", false},
-		{"AccessDenied", false},
-		{"NoSuchBucket", false},
-		{"RequestTimeout", true},
-		{"InternalError", true},
-		{"SlowDown", true},
-		{"ChecksumMismatch", true},
-		{"connection reset", true},
-		{"i/o timeout", true},
-		{"SignatureDoesNotMatch", false},
-		{"some unknown error", false},
+		{"StatusCode:404", storage.ErrNotFound},
+		{"NoSuchKey", storage.ErrNotFound},
+		{"NoSuchBucket", storage.ErrNotFound},
+		{"StatusCode:403", storage.ErrPermission},
+		{"AccessDenied", storage.ErrPermission},
+		{"SignatureDoesNotMatch", storage.ErrPermission},
+		{"StatusCode:409", storage.ErrAlreadyExists},
+		{"StatusCode:400", storage.ErrInvalidArgument},
+		{"InvalidArgument", storage.ErrInvalidArgument},
+		{"ChecksumMismatch", storage.ErrChecksum},
+		{"md5 mismatch", storage.ErrChecksum},
+		{"StatusCode:500", nil},
+		{"some unknown", nil},
 	}
 	for _, tt := range tests {
-		got := retryable(toErr(tt.errMsg))
+		orig := toErr(tt.input)
+		got := mapError(orig)
+		if tt.want == nil {
+			if got != orig {
+				t.Errorf("mapError(%q) expected no wrap, got %v", tt.input, got)
+			}
+			continue
+		}
+		if !errors.Is(got, tt.want) {
+			t.Errorf("mapError(%q) should wrap %v, got %v", tt.input, tt.want, got)
+		}
+	}
+}
+
+func TestRetryable(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{toErr("StatusCode:429"), true},
+		{toErr("StatusCode:503"), true},
+		{toErr("StatusCode:500"), true},
+		{toErr("StatusCode:502"), true},
+		{storage.ErrPermission, false},
+		{storage.ErrNotFound, false},
+		{storage.ErrAlreadyExists, false},
+		{storage.ErrInvalidArgument, false},
+		{toErr("RequestTimeout"), true},
+		{toErr("InternalError"), true},
+		{toErr("ServiceUnavailable"), true},
+		{toErr("SlowDown"), true},
+		{storage.ErrChecksum, true},
+		{toErr("connection reset"), true},
+		{toErr("i/o timeout"), true},
+		{toErr("TLS handshake"), true},
+		{toErr("some unknown error"), false},
+	}
+	for _, tt := range tests {
+		got := retryable(tt.err)
 		if got != tt.want {
-			t.Errorf("retryable(%q) = %v, want %v", tt.errMsg, got, tt.want)
+			t.Errorf("retryable(%v) = %v, want %v", tt.err, got, tt.want)
 		}
 	}
 }
 
 func TestNonRetryable(t *testing.T) {
 	tests := []struct {
-		errMsg string
-		want   bool
+		err  error
+		want bool
 	}{
-		{"StatusCode:403", true},
-		{"StatusCode:404", true},
-		{"StatusCode:400", true},
-		{"AccessDenied", true},
-		{"NoSuchBucket", true},
-		{"NoSuchKey", true},
-		{"InvalidArgument", true},
-		{"SignatureDoesNotMatch", true},
-		{"StatusCode:500", false},
-		{"SlowDown", false},
+		{storage.ErrPermission, true},
+		{storage.ErrNotFound, true},
+		{storage.ErrAlreadyExists, true},
+		{storage.ErrInvalidArgument, true},
+		{toErr("StatusCode:500"), false},
+		{toErr("SlowDown"), false},
 	}
 	for _, tt := range tests {
-		got := nonRetryable(toErr(tt.errMsg))
+		got := nonRetryable(tt.err)
 		if got != tt.want {
-			t.Errorf("nonRetryable(%q) = %v, want %v", tt.errMsg, got, tt.want)
+			t.Errorf("nonRetryable(%v) = %v, want %v", tt.err, got, tt.want)
 		}
 	}
 }
@@ -150,6 +185,9 @@ func TestWithRetry(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for non-retryable")
+	}
+	if !errors.Is(err, storage.ErrPermission) {
+		t.Errorf("expected wrapped ErrPermission, got %v", err)
 	}
 
 	count := 0
@@ -213,11 +251,11 @@ func (e *testErr) Error() string { return e.msg }
 
 func toErr(msg string) error { return &testErr{msg: msg} }
 
-func TestSource_Base(t *testing.T) {
+func TestSource_URI(t *testing.T) {
 	s := &Source{bucket: "my-bucket-1250000000", prefix: "backup/"}
 	want := "cos://my-bucket-1250000000/backup/"
-	if got := s.Base(); got != want {
-		t.Errorf("Base()=%q, want %q", got, want)
+	if got := s.URI(); got != want {
+		t.Errorf("URI()=%q, want %q", got, want)
 	}
 }
 
@@ -268,8 +306,8 @@ func TestWithRetryResult_NonRetryable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-retryable")
 	}
-	if !strings.Contains(err.Error(), "StatusCode:403") {
-		t.Errorf("expected original error, got %v", err)
+	if !errors.Is(err, storage.ErrPermission) {
+		t.Errorf("expected wrapped ErrPermission, got %v", err)
 	}
 }
 

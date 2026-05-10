@@ -35,7 +35,7 @@ func NewDestinationWithConfig(base string, cfg WriterConfig) (*Destination, erro
 }
 
 // OpenFile creates or opens a file for writing (pwrite semantics).
-func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
 	fullPath := filepath.Join(d.base, relPath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -85,16 +85,19 @@ func (d *Destination) Symlink(_ context.Context, relPath string, target string) 
 }
 
 // SetMetadata applies POSIX metadata to a file or directory.
-func (d *Destination) SetMetadata(_ context.Context, relPath string, meta model.FileMetadata) error {
-	return setMetadata(d.base, relPath, meta)
+func (d *Destination) SetMetadata(_ context.Context, relPath string, attr storage.FileAttr) error {
+	return setMetadata(d.base, relPath, attr)
 }
 
-// Restat returns metadata for an existing file on the destination (for skip-by-mtime).
-func (d *Destination) Restat(_ context.Context, relPath string) (model.DiscoverItem, error) {
+// Stat returns metadata for an existing file on the destination (for skip-by-mtime).
+func (d *Destination) Stat(_ context.Context, relPath string) (storage.DiscoverItem, error) {
 	fullPath := filepath.Join(d.base, relPath)
 	info, err := os.Lstat(fullPath)
 	if err != nil {
-		return model.DiscoverItem{}, err
+		if os.IsNotExist(err) {
+			return storage.DiscoverItem{}, fmt.Errorf("local stat %s: %w", relPath, storage.ErrNotFound)
+		}
+		return storage.DiscoverItem{}, err
 	}
 
 	mode := info.Mode()
@@ -110,26 +113,40 @@ func (d *Destination) Restat(_ context.Context, relPath string) (model.DiscoverI
 
 	uid, gid := fileOwner(info)
 
-	item := model.DiscoverItem{
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: info.Size(),
-		Mode:     uint32(mode.Perm()),
-		Uid:      uid,
-		Gid:      gid,
-		Mtime:    info.ModTime().UnixNano(),
+		Size:     info.Size(),
+		Attr: storage.FileAttr{
+			Mode:  mode.Perm(),
+			Uid:   uid,
+			Gid:   gid,
+			Mtime: info.ModTime(),
+		},
 	}
 
 	if ft == model.FileSymlink {
 		target, err := os.Readlink(fullPath)
 		if err != nil {
-			return model.DiscoverItem{}, fmt.Errorf("local restat readlink %s: %w", relPath, err)
+			return storage.DiscoverItem{}, fmt.Errorf("local stat readlink %s: %w", relPath, err)
 		}
-		item.LinkTarget = target
+		item.Attr.SymlinkTarget = target
 	}
 
 	return item, nil
 }
 
 // Base returns the destination base directory.
-func (d *Destination) Base() string { return d.base }
+func (d *Destination) URI() string { return d.base }
+
+// Connect is a no-op for local destinations.
+func (d *Destination) Connect(ctx context.Context) error { return nil }
+
+// Close is a no-op for local destinations.
+func (d *Destination) Close(ctx context.Context) error { return nil }
+
+// BeginTask is a no-op for local destinations.
+func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for local destinations.
+func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }

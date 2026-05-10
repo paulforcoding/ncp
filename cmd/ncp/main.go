@@ -257,6 +257,26 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	// Source lifecycle
+	if err := src.Connect(ctx); err != nil {
+		return fmt.Errorf("connect source: %w", err)
+	}
+	defer src.Close(ctx)
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return fmt.Errorf("begin task on source: %w", err)
+	}
+
+	// Destination lifecycle (non-factory)
+	if dst != nil {
+		if err := dst.Connect(ctx); err != nil {
+			return fmt.Errorf("connect destination: %w", err)
+		}
+		defer dst.Close(ctx)
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -273,6 +293,11 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
+
+	src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		dst.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	// Update meta.json
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
@@ -322,6 +347,23 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	}
 	defer store.Close()
 
+	if err := src.Connect(ctx); err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer src.Close(ctx)
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return fmt.Errorf("begin task on source: %w", err)
+	}
+	if dst != nil {
+		if err := dst.Connect(ctx); err != nil {
+			return fmt.Errorf("open destination: %w", err)
+		}
+		defer dst.Close(ctx)
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -339,6 +381,11 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
+
+	src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		dst.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -459,6 +506,23 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	}
 	defer store.Close()
 
+	if err := src.Connect(ctx); err != nil {
+		return 1, fmt.Errorf("open source: %w", err)
+	}
+	defer src.Close(ctx)
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return 1, fmt.Errorf("begin task on source: %w", err)
+	}
+	if dst != nil {
+		if err := dst.Connect(ctx); err != nil {
+			return 1, fmt.Errorf("open destination: %w", err)
+		}
+		defer dst.Close(ctx)
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return 1, fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -474,7 +538,14 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	jobOpts = append(jobOpts, extraOpts...)
 
 	job := copy.NewJob(src, dst, store, jobOpts...)
-	return job.Run(ctx)
+	exitCode, err := job.Run(ctx)
+
+	src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		dst.EndTask(ctx, storage.TaskSummary{})
+	}
+
+	return exitCode, err
 }
 
 func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
@@ -483,6 +554,16 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		return 1, err
 	}
 	defer store.Close()
+
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.Connect(ctx); err != nil {
+			return 1, fmt.Errorf("open source: %w", err)
+		}
+		defer s.Close(ctx)
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return 1, fmt.Errorf("begin task on source: %w", err)
+		}
+	}
 
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
@@ -494,7 +575,13 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
 	)
-	return job.Run(ctx)
+	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		s.EndTask(ctx, storage.TaskSummary{})
+	}
+
+	return exitCode, err
 }
 
 // runCksum is the Composition Root for the cksum command.
@@ -579,6 +666,16 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.Connect(ctx); err != nil {
+			return fmt.Errorf("open source: %w", err)
+		}
+		defer s.Close(ctx)
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on source: %w", err)
+		}
+	}
+
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
@@ -590,6 +687,10 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	)
 
 	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		s.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -635,6 +736,16 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	}
 	defer store.Close()
 
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.Connect(ctx); err != nil {
+			return fmt.Errorf("open source: %w", err)
+		}
+		defer s.Close(ctx)
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on source: %w", err)
+		}
+	}
+
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
@@ -647,6 +758,10 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	)
 
 	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		s.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 

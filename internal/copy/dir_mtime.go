@@ -31,7 +31,7 @@ func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase st
 		if cs != model.CopyDone {
 			continue
 		}
-		srcPath := filepath.Join(src.Base(), key)
+		srcPath := filepath.Join(src.URI(), key)
 		info, err := os.Stat(srcPath)
 		if err != nil || !info.IsDir() {
 			continue
@@ -42,7 +42,7 @@ func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase st
 	// Apply in reverse order (deep→shallow)
 	for i := len(dirs) - 1; i >= 0; i-- {
 		relPath := dirs[i]
-		srcInfo, err := os.Stat(filepath.Join(src.Base(), relPath))
+		srcInfo, err := os.Stat(filepath.Join(src.URI(), relPath))
 		if err != nil {
 			continue
 		}

@@ -68,9 +68,9 @@ func (w *Walker) Stats() WalkerStats {
 }
 
 // Run traverses the source, writes progress, and pushes to discoverCh.
-func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) error {
+func (w *Walker) Run(ctx context.Context, discoverCh chan<- storage.DiscoverItem) error {
 	defer func() {
-		w.dispatchRemaining(discoverCh)
+		w.dispatchRemaining(ctx, discoverCh)
 		close(discoverCh)
 	}()
 
@@ -78,7 +78,7 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 	batch := w.store.Batch()
 	batchCount := 0
 
-	err := w.src.Walk(ctx, func(item model.DiscoverItem) error {
+	err := w.src.Walk(ctx, func(_ context.Context, item storage.DiscoverItem) error {
 		w.discoveredCount.Add(1)
 
 		if pushEnabled {
@@ -130,7 +130,7 @@ func (w *Walker) Run(ctx context.Context, discoverCh chan<- model.DiscoverItem) 
 }
 
 // dispatchRemaining pushes discovered (not yet dispatched) items to discoverCh.
-func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
+func (w *Walker) dispatchRemaining(ctx context.Context, discoverCh chan<- storage.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
 		return
@@ -146,7 +146,7 @@ func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 		if cs != model.CopyDiscovered {
 			continue
 		}
-		item, err := w.src.Restat(key)
+		item, err := w.src.Stat(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -157,7 +157,7 @@ func (w *Walker) dispatchRemaining(discoverCh chan<- model.DiscoverItem) {
 }
 
 // ResumeFromDB restores discoverCh from DB for a completed walk.
-func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
+func (w *Walker) ResumeFromDB(ctx context.Context, discoverCh chan<- storage.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
 		return
@@ -173,7 +173,7 @@ func (w *Walker) ResumeFromDB(discoverCh chan<- model.DiscoverItem) {
 		if shouldSkipForCopyResume(cs, cks) {
 			continue
 		}
-		item, err := w.src.Restat(key)
+		item, err := w.src.Stat(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -194,7 +194,7 @@ func shouldSkipForCopyResume(cs model.CopyStatus, cks model.CksumStatus) bool {
 }
 
 // ResumeFromDBForCksum pushes files needing checksum verification to cksumCh.
-func (w *Walker) ResumeFromDBForCksum(cksumCh chan<- model.DiscoverItem) {
+func (w *Walker) ResumeFromDBForCksum(ctx context.Context, cksumCh chan<- storage.DiscoverItem) {
 	it, err := w.store.Iter()
 	if err != nil {
 		return
@@ -213,7 +213,7 @@ func (w *Walker) ResumeFromDBForCksum(cksumCh chan<- model.DiscoverItem) {
 		if cks == model.CksumPass {
 			continue
 		}
-		item, err := w.src.Restat(key)
+		item, err := w.src.Stat(ctx, key)
 		if err != nil {
 			continue
 		}

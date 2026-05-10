@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -41,8 +42,8 @@ func TestWalkBasic(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	err = src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	err = src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	})
@@ -78,7 +79,7 @@ func TestWalkDFSOrder(t *testing.T) {
 	}
 
 	var paths []string
-	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		paths = append(paths, item.RelPath)
 		return nil
 	}); err != nil {
@@ -106,7 +107,7 @@ func TestWalkSkipSpecial(t *testing.T) {
 	}
 
 	var count int
-	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		count++
 		return nil
 	}); err != nil {
@@ -119,23 +120,23 @@ func TestWalkSkipSpecial(t *testing.T) {
 	}
 }
 
-func TestOpenReadAt(t *testing.T) {
+func TestOpenRead(t *testing.T) {
 	root := createTestTree(t)
 	src, err := NewSource(root)
 	if err != nil {
 		t.Fatalf("new source: %v", err)
 	}
 
-	r, err := src.Open("dir1/file1.txt")
+	r, err := src.Open(context.Background(), "dir1/file1.txt")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer r.Close()
+	defer r.Close(context.Background())
 
 	buf := make([]byte, 5)
-	n, err := r.ReadAt(buf, 0)
+	n, err := r.Read(context.Background(), buf)
 	if err != nil {
-		t.Fatalf("readat: %v", err)
+		t.Fatalf("read: %v", err)
 	}
 	if n != 5 || string(buf) != "hello" {
 		t.Fatalf("expected 'hello', got %q", string(buf[:n]))
@@ -150,7 +151,7 @@ func TestRelPathFormat(t *testing.T) {
 	}
 
 	var paths []string
-	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	if err := src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		paths = append(paths, item.RelPath)
 		return nil
 	}); err != nil {
@@ -173,8 +174,8 @@ func TestBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new source: %v", err)
 	}
-	if src.Base() != "/tmp" {
-		t.Fatalf("expected /tmp, got %s", src.Base())
+	if src.URI() != "/tmp" {
+		t.Fatalf("expected /tmp, got %s", src.URI())
 	}
 }
 
@@ -190,8 +191,8 @@ func TestWalkSingleFile(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	if err := src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	if err := src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	}); err != nil {
@@ -221,16 +222,16 @@ func TestOpenSingleFile(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	r, err := src.Open("")
+	r, err := src.Open(context.Background(), "")
 	if err != nil {
 		t.Fatalf("open with empty relPath: %v", err)
 	}
-	defer r.Close()
+	defer r.Close(context.Background())
 
 	buf := make([]byte, 5)
-	n, err := r.ReadAt(buf, 0)
+	n, err := r.Read(context.Background(), buf)
 	if err != nil {
-		t.Fatalf("readat: %v", err)
+		t.Fatalf("read: %v", err)
 	}
 	if n != 5 || string(buf) != "hello" {
 		t.Fatalf("expected 'hello', got %q", string(buf[:n]))

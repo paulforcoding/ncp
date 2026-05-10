@@ -136,8 +136,8 @@ func TestIntegration_RemotePull_Walk(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	err = src.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	err = src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	})
@@ -177,34 +177,32 @@ func TestIntegration_RemotePull_OpenRead(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	r, err := src.Open("data.bin")
+	ctx := context.Background()
+	r, err := src.Open(ctx, "data.bin")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer r.Close()
+	defer r.Close(ctx)
 
 	buf := make([]byte, len(content))
-	n, err := r.ReadAt(buf, 0)
+	n, err := r.Read(ctx, buf)
 	if err != nil {
-		t.Fatalf("readat: %v", err)
+		t.Fatalf("read: %v", err)
 	}
 	if n != len(content) || string(buf) != string(content) {
 		t.Fatalf("content mismatch: got %q (%d bytes)", string(buf[:n]), n)
 	}
 
-	// Partial read at offset
+	// After full read, next read should return EOF
 	partial := make([]byte, 5)
-	n, err = r.ReadAt(partial, 6)
-	if err != nil {
-		t.Fatalf("partial readat: %v", err)
-	}
-	if n != 5 || string(partial) != "remot" {
-		t.Fatalf("partial mismatch: got %q", string(partial[:n]))
+	_, err = r.Read(ctx, partial)
+	if err == nil {
+		t.Fatal("expected EOF after full read")
 	}
 }
 
-// TestIntegration_RemotePull_Restat verifies Source.Restat returns correct metadata.
-func TestIntegration_RemotePull_Restat(t *testing.T) {
+// TestIntegration_RemotePull_Stat verifies Source.Stat returns correct metadata.
+func TestIntegration_RemotePull_Stat(t *testing.T) {
 	serveDir := t.TempDir()
 	os.WriteFile(filepath.Join(serveDir, "statme.txt"), []byte("stat content"), 0o644)
 
@@ -215,9 +213,9 @@ func TestIntegration_RemotePull_Restat(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	item, err := src.Restat("statme.txt")
+	item, err := src.Stat(context.Background(), "statme.txt")
 	if err != nil {
-		t.Fatalf("restat: %v", err)
+		t.Fatalf("stat: %v", err)
 	}
 	if item.RelPath != "statme.txt" {
 		t.Fatalf("relpath mismatch: got %q", item.RelPath)
@@ -225,8 +223,8 @@ func TestIntegration_RemotePull_Restat(t *testing.T) {
 	if item.FileType != model.FileRegular {
 		t.Fatalf("filetype: expected Regular, got %d", item.FileType)
 	}
-	if item.FileSize != 12 {
-		t.Fatalf("size: expected 12, got %d", item.FileSize)
+	if item.Size != 12 {
+		t.Fatalf("size: expected 12, got %d", item.Size)
 	}
 }
 
@@ -539,7 +537,7 @@ type failAfterNOpen struct {
 	failAt int
 }
 
-func (d *failAfterNOpen) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *failAfterNOpen) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
 	d.mu.Lock()
 	d.count++
 	if d.count > d.failAt {

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
-	"github.com/zp001/ncp/pkg/model"
 )
 
 // BasenamePrefixedSource wraps one or more storage.Source instances,
@@ -47,17 +46,16 @@ func NewBasenamePrefixedSource(sources []storage.Source, basenames []string) (*B
 }
 
 // Walk walks each source sequentially, prefixing RelPath with the source's basename.
-func (ms *BasenamePrefixedSource) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (ms *BasenamePrefixedSource) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	for _, e := range ms.entries {
-		if err := e.src.Walk(ctx, func(item model.DiscoverItem) error {
+		if err := e.src.Walk(ctx, func(_ context.Context, item storage.DiscoverItem) error {
 			if item.RelPath == "" {
 				// Single-file source: emit basename (no trailing slash)
 				item.RelPath = strings.TrimSuffix(e.prefix, "/")
 			} else {
 				item.RelPath = e.prefix + item.RelPath
 			}
-			item.SrcBase = ms.Base()
-			return fn(item)
+			return fn(ctx, item)
 		}); err != nil {
 			return err
 		}
@@ -66,38 +64,79 @@ func (ms *BasenamePrefixedSource) Walk(ctx context.Context, fn func(model.Discov
 }
 
 // Open routes to the correct source by matching the RelPath prefix.
-func (ms *BasenamePrefixedSource) Open(relPath string) (storage.Reader, error) {
+func (ms *BasenamePrefixedSource) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	e, innerPath := ms.route(relPath)
 	if e == nil {
 		return nil, fmt.Errorf("basename-prefixed source: no source for path %q", relPath)
 	}
-	return e.src.Open(innerPath)
+	return e.src.Open(ctx, innerPath)
 }
 
-// Restat routes to the correct source by matching the RelPath prefix.
-func (ms *BasenamePrefixedSource) Restat(relPath string) (model.DiscoverItem, error) {
+// Stat routes to the correct source by matching the RelPath prefix.
+func (ms *BasenamePrefixedSource) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	e, innerPath := ms.route(relPath)
 	if e == nil {
-		return model.DiscoverItem{}, fmt.Errorf("basename-prefixed source: no source for path %q", relPath)
+		return storage.DiscoverItem{}, fmt.Errorf("basename-prefixed source: no source for path %q", relPath)
 	}
-	item, err := e.src.Restat(innerPath)
+	item, err := e.src.Stat(ctx, innerPath)
 	if err != nil {
 		return item, err
 	}
 	item.RelPath = relPath
-	item.SrcBase = ms.Base()
 	return item, nil
 }
 
 // Base returns a synthetic base path for the source.
-func (ms *BasenamePrefixedSource) Base() string {
+func (ms *BasenamePrefixedSource) URI() string {
 	if ms.base != "" {
 		return ms.base
 	}
 	if len(ms.entries) > 0 {
-		return filepath.Dir(ms.entries[0].src.Base())
+		return filepath.Dir(ms.entries[0].src.URI())
 	}
 	return ""
+}
+
+// Connect delegates to all underlying sources.
+func (ms *BasenamePrefixedSource) Connect(ctx context.Context) error {
+	for _, e := range ms.entries {
+		if err := e.src.Connect(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close delegates to all underlying sources.
+func (ms *BasenamePrefixedSource) Close(ctx context.Context) error {
+	var firstErr error
+	for _, e := range ms.entries {
+		if err := e.src.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// BeginTask delegates to all underlying sources.
+func (ms *BasenamePrefixedSource) BeginTask(ctx context.Context, taskID string) error {
+	for _, e := range ms.entries {
+		if err := e.src.BeginTask(ctx, taskID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EndTask delegates to all underlying sources.
+func (ms *BasenamePrefixedSource) EndTask(ctx context.Context, summary storage.TaskSummary) error {
+	var firstErr error
+	for _, e := range ms.entries {
+		if err := e.src.EndTask(ctx, summary); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (ms *BasenamePrefixedSource) route(relPath string) (*basenamePrefixedSourceEntry, string) {

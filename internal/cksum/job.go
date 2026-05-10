@@ -64,14 +64,14 @@ func WithCksumChannelBuf(n int) CksumJobOption { return func(j *CksumJob) { j.ch
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {
-	cksumCh := make(chan model.DiscoverItem, j.channelBuf)
+	cksumCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
 	walker := copy.NewWalker(j.src, j.store, j.fileLog, logDuration)
 	dbWriter := NewCksumDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
-	workerWg := j.startCksumWorkers(cksumCh, resultCh)
+	workerWg := j.startCksumWorkers(ctx, cksumCh, resultCh)
 	dbWg := j.startCksumDBWriter(dbWriter, resultCh)
 
 	go func() {
@@ -91,14 +91,14 @@ func (j *CksumJob) Run(ctx context.Context) (int, error) {
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
-func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, cksumCh chan<- model.DiscoverItem) error {
+func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, cksumCh chan<- storage.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
 		return fmt.Errorf("check walk_complete: %w", err)
 	}
 
 	if hasWalkComplete {
-		walker.ResumeFromDBForCksum(cksumCh)
+		walker.ResumeFromDBForCksum(ctx, cksumCh)
 		return nil
 	}
 
@@ -112,14 +112,14 @@ func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, 
 	return freshWalker.Run(ctx, cksumCh)
 }
 
-func (j *CksumJob) startCksumWorkers(cksumCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
-			w.Run(cksumCh, resultCh)
+			w.Run(ctx, cksumCh, resultCh)
 		}(i)
 	}
 	return &wg

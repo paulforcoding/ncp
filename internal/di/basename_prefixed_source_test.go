@@ -12,32 +12,37 @@ import (
 // mockSource is a test-only Source implementation.
 type mockSource struct {
 	base  string
-	items []model.DiscoverItem
+	items []storage.DiscoverItem
 }
 
-func (m *mockSource) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (m *mockSource) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	for _, item := range m.items {
-		if err := fn(item); err != nil {
+		if err := fn(ctx, item); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (m *mockSource) Open(relPath string) (storage.Reader, error) {
+func (m *mockSource) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	return nil, fmt.Errorf("mock open: %s", relPath)
 }
 
-func (m *mockSource) Restat(relPath string) (model.DiscoverItem, error) {
-	return model.DiscoverItem{RelPath: relPath, SrcBase: m.base}, nil
+func (m *mockSource) Stat(_ context.Context, relPath string) (storage.DiscoverItem, error) {
+	return storage.DiscoverItem{RelPath: relPath}, nil
 }
 
-func (m *mockSource) Base() string { return m.base }
+func (m *mockSource) URI() string { return m.base }
+
+func (m *mockSource) Connect(ctx context.Context) error  { return nil }
+func (m *mockSource) Close(ctx context.Context) error    { return nil }
+func (m *mockSource) BeginTask(ctx context.Context, taskID string) error { return nil }
+func (m *mockSource) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
 func TestBasenamePrefixedSource_SingleDir(t *testing.T) {
 	inner := &mockSource{
 		base: "/data/mydir",
-		items: []model.DiscoverItem{
+		items: []storage.DiscoverItem{
 			{RelPath: "a.txt", FileType: model.FileRegular},
 			{RelPath: "sub/b.txt", FileType: model.FileRegular},
 		},
@@ -48,8 +53,8 @@ func TestBasenamePrefixedSource_SingleDir(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	if err := bps.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	if err := bps.Walk(context.Background(), func(ctx context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	}); err != nil {
@@ -68,16 +73,16 @@ func TestBasenamePrefixedSource_SingleDir(t *testing.T) {
 }
 
 func TestBasenamePrefixedSource_MultiSource(t *testing.T) {
-	srcA := &mockSource{base: "/data/a", items: []model.DiscoverItem{{RelPath: "f1.txt", FileType: model.FileRegular}}}
-	srcB := &mockSource{base: "/data/b", items: []model.DiscoverItem{{RelPath: "f2.txt", FileType: model.FileRegular}}}
+	srcA := &mockSource{base: "/data/a", items: []storage.DiscoverItem{{RelPath: "f1.txt", FileType: model.FileRegular}}}
+	srcB := &mockSource{base: "/data/b", items: []storage.DiscoverItem{{RelPath: "f2.txt", FileType: model.FileRegular}}}
 
 	bps, err := NewBasenamePrefixedSource([]storage.Source{srcA, srcB}, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	if err := bps.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	if err := bps.Walk(context.Background(), func(ctx context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	}); err != nil {
@@ -98,7 +103,7 @@ func TestBasenamePrefixedSource_MultiSource(t *testing.T) {
 func TestBasenamePrefixedSource_SingleFile(t *testing.T) {
 	inner := &mockSource{
 		base:  "/data/file.txt",
-		items: []model.DiscoverItem{{RelPath: "", FileType: model.FileRegular}},
+		items: []storage.DiscoverItem{{RelPath: "", FileType: model.FileRegular}},
 	}
 
 	bps, err := NewBasenamePrefixedSource([]storage.Source{inner}, []string{"file.txt"})
@@ -106,8 +111,8 @@ func TestBasenamePrefixedSource_SingleFile(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 
-	var items []model.DiscoverItem
-	if err := bps.Walk(context.Background(), func(item model.DiscoverItem) error {
+	var items []storage.DiscoverItem
+	if err := bps.Walk(context.Background(), func(ctx context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	}); err != nil {
@@ -125,7 +130,7 @@ func TestBasenamePrefixedSource_SingleFile(t *testing.T) {
 func TestBasenamePrefixedSource_RouteSingleFile(t *testing.T) {
 	inner := &mockSource{
 		base:  "/data/file.txt",
-		items: []model.DiscoverItem{{RelPath: "", FileType: model.FileRegular}},
+		items: []storage.DiscoverItem{{RelPath: "", FileType: model.FileRegular}},
 	}
 
 	bps, err := NewBasenamePrefixedSource([]storage.Source{inner}, []string{"file.txt"})
@@ -133,12 +138,12 @@ func TestBasenamePrefixedSource_RouteSingleFile(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 
-	item, err := bps.Restat("file.txt")
+	item, err := bps.Stat(context.Background(), "file.txt")
 	if err != nil {
-		t.Fatalf("restat: %v", err)
+		t.Fatalf("stat: %v", err)
 	}
 	if item.RelPath != "file.txt" {
-		t.Fatalf("restat relPath: got %q, want file.txt", item.RelPath)
+		t.Fatalf("stat relPath: got %q, want file.txt", item.RelPath)
 	}
 }
 
@@ -150,7 +155,7 @@ func TestBasenamePrefixedSource_ZeroSources(t *testing.T) {
 }
 
 func TestBasenamePrefixedSource_MismatchedCounts(t *testing.T) {
-	inner := &mockSource{base: "/data/a", items: []model.DiscoverItem{}}
+	inner := &mockSource{base: "/data/a", items: []storage.DiscoverItem{}}
 	_, err := NewBasenamePrefixedSource([]storage.Source{inner}, []string{"a", "b"})
 	if err == nil {
 		t.Fatal("expected error for mismatched counts")

@@ -7,38 +7,72 @@ import (
 
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
-	"github.com/zp001/ncp/pkg/model"
 )
 
 // Destination implements storage.Destination for remote ncp servers.
-// Each Destination owns a single TCP connection used for all operations.
 type Destination struct {
+	addr     string
+	basePath string
 	conn     *protocol.Conn
-	basePath string // destination base path on the remote server
 }
 
 var _ storage.Destination = (*Destination)(nil)
 
-// NewDestination dials the remote server, sends MsgInit with basePath,
-// and returns a Destination ready for use.
+// NewDestination creates a remote Destination for the given ncp server.
+// The connection is not established until Open is called.
 func NewDestination(addr, basePath string) (*Destination, error) {
-	conn, err := protocol.Dial(addr)
+	return &Destination{addr: addr, basePath: basePath}, nil
+}
+
+// Connect establishes a TCP connection and sends MsgInit.
+func (d *Destination) Connect(ctx context.Context) error {
+	conn, err := protocol.Dial(d.addr)
 	if err != nil {
-		return nil, fmt.Errorf("remote destination dial %s: %w", addr, err)
+		return fmt.Errorf("remote destination dial %s: %w", d.addr, err)
 	}
 
-	// Send MsgInit to tell the server our basePath
-	initMsg := &protocol.InitMsg{BasePath: basePath}
+	initMsg := &protocol.InitMsg{BasePath: d.basePath}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("remote init %s: %w", addr, err)
+		return fmt.Errorf("remote init %s: %w", d.addr, err)
 	}
 
-	return &Destination{conn: conn, basePath: basePath}, nil
+	d.conn = conn
+	return nil
+}
+
+// Close closes the underlying connection.
+func (d *Destination) Close(ctx context.Context) error {
+	if d.conn != nil {
+		return d.conn.Close()
+	}
+	return nil
+}
+
+// BeginTask is a no-op for remote destinations (initialization happens in Open).
+func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask sends MsgTaskDone to the server and waits for acknowledgement.
+func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error {
+	if err := d.ensureConnected(ctx); err != nil {
+		return err
+	}
+	_, err := d.conn.SendMsgRecvAck(protocol.MsgTaskDone, nil)
+	return err
+}
+
+func (d *Destination) ensureConnected(ctx context.Context) error {
+	if d.conn == nil {
+		return d.Connect(ctx)
+	}
+	return nil
 }
 
 // OpenFile sends MsgOpen and returns a Writer backed by the shared connection.
-func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
+	if err := d.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
 	fullPath := d.fullPath(relPath)
 	msg := &protocol.OpenMsg{
 		Path:  fullPath,
@@ -56,7 +90,10 @@ func (d *Destination) OpenFile(_ context.Context, relPath string, size int64, mo
 }
 
 // Mkdir sends MsgMkdir to the server.
-func (d *Destination) Mkdir(_ context.Context, relPath string, mode os.FileMode, uid, gid int) error {
+func (d *Destination) Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error {
+	if err := d.ensureConnected(ctx); err != nil {
+		return err
+	}
 	msg := &protocol.MkdirMsg{
 		Path: d.fullPath(relPath),
 		Mode: uint32(mode),
@@ -71,7 +108,10 @@ func (d *Destination) Mkdir(_ context.Context, relPath string, mode os.FileMode,
 }
 
 // Symlink sends MsgSymlink to the server.
-func (d *Destination) Symlink(_ context.Context, relPath string, target string) error {
+func (d *Destination) Symlink(ctx context.Context, relPath string, target string) error {
+	if err := d.ensureConnected(ctx); err != nil {
+		return err
+	}
 	msg := &protocol.SymlinkMsg{
 		Target:   target,
 		LinkPath: d.fullPath(relPath),
@@ -84,21 +124,31 @@ func (d *Destination) Symlink(_ context.Context, relPath string, target string) 
 }
 
 // SetMetadata sends MsgUtime and MsgSetxattr to the server.
-func (d *Destination) SetMetadata(_ context.Context, relPath string, meta model.FileMetadata) error {
+func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr storage.FileAttr) error {
+	if err := d.ensureConnected(ctx); err != nil {
+		return err
+	}
 	fullPath := d.fullPath(relPath)
 
 	// Utime
+	var atime, mtime int64
+	if !attr.Atime.IsZero() {
+		atime = attr.Atime.UnixNano()
+	}
+	if !attr.Mtime.IsZero() {
+		mtime = attr.Mtime.UnixNano()
+	}
 	utimeMsg := &protocol.UtimeMsg{
 		Path:  fullPath,
-		Atime: meta.Atime,
-		Mtime: meta.Mtime,
+		Atime: atime,
+		Mtime: mtime,
 	}
 	if _, err := d.conn.SendMsgRecvAck(protocol.MsgUtime, utimeMsg.Encode()); err != nil {
 		return fmt.Errorf("remote utime %s: %w", relPath, err)
 	}
 
 	// Xattr
-	for key, value := range meta.Xattr {
+	for key, value := range attr.Xattr {
 		xattrMsg := &protocol.SetxattrMsg{
 			Path:  fullPath,
 			Key:   key,
@@ -112,11 +162,33 @@ func (d *Destination) SetMetadata(_ context.Context, relPath string, meta model.
 	return nil
 }
 
-// Done sends MsgTaskDone to the server and closes the connection.
-func (d *Destination) Done() error {
-	_, err := d.conn.SendMsgRecvAck(protocol.MsgTaskDone, nil)
-	d.conn.Close()
-	return err
+// Stat sends MsgStat and returns the file metadata as a DiscoverItem.
+// Used by skip-by-mtime to check if dst already has the file.
+func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
+	if err := d.ensureConnected(ctx); err != nil {
+		return storage.DiscoverItem{}, err
+	}
+	msg := &protocol.StatMsg{RelPath: d.fullPath(relPath)}
+	f, err := d.conn.SendAndRecv(protocol.MsgStat, msg.Encode())
+	if err != nil {
+		return storage.DiscoverItem{}, fmt.Errorf("remote stat %s: %w", relPath, err)
+	}
+	if f.Type == protocol.MsgError {
+		emsg := &protocol.ErrorMsg{}
+		if derr := emsg.Decode(f.Payload); derr != nil {
+			return storage.DiscoverItem{}, fmt.Errorf("remote stat error (undecodable): %w", derr)
+		}
+		return storage.DiscoverItem{}, fmt.Errorf("remote stat error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
+	}
+
+	dataMsg := &protocol.DataMsg{}
+	if err := dataMsg.Decode(f.Payload); err != nil {
+		return storage.DiscoverItem{}, fmt.Errorf("remote stat decode: %w", err)
+	}
+	if len(dataMsg.Entries) == 0 {
+		return storage.DiscoverItem{}, fmt.Errorf("remote stat %s: %w", relPath, storage.ErrNotFound)
+	}
+	return listEntryToDiscoverItem(&dataMsg.Entries[0]), nil
 }
 
 // fullPath returns relPath — basePath is already sent via MsgInit.

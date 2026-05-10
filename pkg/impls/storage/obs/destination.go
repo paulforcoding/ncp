@@ -8,8 +8,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	"io"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -23,24 +26,25 @@ const (
 
 // Destination implements storage.Destination for Huawei Cloud OBS.
 type Destination struct {
-	client   *obs.ObsClient
-	bucket   string
-	prefix   string
-	retryCfg RetryConfig
+	client             *obs.ObsClient
+	bucket             string
+	prefix             string
+	retryCfg           RetryConfig
+	multipartThreshold int64
 }
 
 var _ storage.Destination = (*Destination)(nil)
-var _ storage.Restatter = (*Destination)(nil)
 
 // Config holds OBS destination configuration.
 type Config struct {
-	Endpoint string
-	Region   string
-	AK       string
-	SK       string
-	Bucket   string
-	Prefix   string
-	RetryCfg RetryConfig
+	Endpoint           string
+	Region             string
+	AK                 string
+	SK                 string
+	Bucket             string
+	Prefix             string
+	RetryCfg           RetryConfig
+	MultipartThreshold int64 // default 1GB; must be >= minPartSize
 }
 
 // NewDestination creates an OBS Destination.
@@ -53,11 +57,16 @@ func NewDestination(cfg Config) (*Destination, error) {
 	if rc.MaxAttempts == 0 {
 		rc = DefaultRetryConfig()
 	}
+	threshold := cfg.MultipartThreshold
+	if threshold == 0 {
+		threshold = 1 << 30 // 1GB default
+	}
 	return &Destination{
-		client:   cli,
-		bucket:   cfg.Bucket,
-		prefix:   cfg.Prefix,
-		retryCfg: rc,
+		client:             cli,
+		bucket:             cfg.Bucket,
+		prefix:             cfg.Prefix,
+		retryCfg:           rc,
+		multipartThreshold: threshold,
 	}, nil
 }
 
@@ -115,19 +124,19 @@ func (d *Destination) Symlink(ctx context.Context, relPath, target string) error
 }
 
 // OpenFile starts an upload and returns a Writer.
-func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
 	key := d.key(relPath)
 	meta := posixMetadata(mode, uid, gid)
 
-	if size < int64(smallFileThreshold) {
-		return newSmallFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg), nil
+	if size < d.multipartThreshold {
+		return newSmallFileWriter(ctx, d.client, d.bucket, key, size, meta, d.retryCfg), nil
 	}
 	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg)
 }
 
 // SetMetadata updates an object's metadata using OBS-native SetObjectMetadata
 // with REPLACE directive (no self-copy required).
-func (d *Destination) SetMetadata(ctx context.Context, relPath string, m model.FileMetadata) error {
+func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr storage.FileAttr) error {
 	key := d.key(relPath)
 
 	md, err := withRetryResult(ctx, d.retryCfg, func() (*obs.GetObjectMetadataOutput, error) {
@@ -144,20 +153,20 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, m model.F
 	if merged == nil {
 		merged = make(map[string]string)
 	}
-	if m.Mode != 0 {
-		merged[metaMode] = fmt.Sprintf("%04o", m.Mode.Perm())
+	if attr.Mode != 0 {
+		merged[metaMode] = fmt.Sprintf("%04o", attr.Mode.Perm())
 	}
-	if m.Uid != 0 || m.Gid != 0 {
-		merged[metaUID] = fmt.Sprintf("%d", m.Uid)
-		merged[metaGID] = fmt.Sprintf("%d", m.Gid)
+	if attr.Uid != 0 || attr.Gid != 0 {
+		merged[metaUID] = fmt.Sprintf("%d", attr.Uid)
+		merged[metaGID] = fmt.Sprintf("%d", attr.Gid)
 	}
-	if m.Atime != 0 {
-		merged[metaAtime] = fmt.Sprintf("%d", m.Atime)
+	if !attr.Atime.IsZero() {
+		merged[metaAtime] = strconv.FormatInt(attr.Atime.UnixNano(), 10)
 	}
-	if m.Mtime != 0 {
-		merged[metaMtime] = fmt.Sprintf("%d", m.Mtime)
+	if !attr.Mtime.IsZero() {
+		merged[metaMtime] = strconv.FormatInt(attr.Mtime.UnixNano(), 10)
 	}
-	for k, v := range m.Xattr {
+	for k, v := range attr.Xattr {
 		merged[metaXattrPrefix+k] = v
 	}
 
@@ -176,9 +185,9 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, m model.F
 	return nil
 }
 
-// Restat returns metadata for an existing object on the destination
+// Stat returns metadata for an existing object on the destination
 // (for skip-by-mtime).
-func (d *Destination) Restat(ctx context.Context, relPath string) (model.DiscoverItem, error) {
+func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := d.key(relPath)
 
 	md, err := withRetryResult(ctx, d.retryCfg, func() (*obs.GetObjectMetadataOutput, error) {
@@ -188,7 +197,7 @@ func (d *Destination) Restat(ctx context.Context, relPath string) (model.Discove
 		})
 	})
 	if err != nil {
-		return model.DiscoverItem{}, fmt.Errorf("obs restat %s: %w", relPath, err)
+		return storage.DiscoverItem{}, fmt.Errorf("obs stat %s: %w", relPath, err)
 	}
 
 	isDir := strings.HasSuffix(key, "/")
@@ -204,25 +213,39 @@ func (d *Destination) Restat(ctx context.Context, relPath string) (model.Discove
 		ft = model.FileRegular
 	}
 
-	item := model.DiscoverItem{
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: md.ContentLength,
-		ETag:     strings.ToLower(strings.Trim(md.ETag, `"`)),
+		Size:     md.ContentLength,
 	}
+	item.Checksum, item.Algorithm = parseETag(md.ETag)
 
 	if md.Metadata != nil {
-		item.Mode = parseMode(md.Metadata[metaMode])
-		item.Uid = parseInt(md.Metadata[metaUID])
-		item.Gid = parseInt(md.Metadata[metaGID])
-		item.Mtime = parseInt64(md.Metadata[metaMtime])
+		item.Attr.Mode = parseMode(md.Metadata[metaMode])
+		item.Attr.Uid = parseInt(md.Metadata[metaUID])
+		item.Attr.Gid = parseInt(md.Metadata[metaGID])
+		if mtime := parseInt64(md.Metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if ft == model.FileSymlink {
-			item.LinkTarget = md.Metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = md.Metadata[metaSymlinkTarget]
 		}
 	}
 
 	return item, nil
 }
+
+// Connect is a no-op for OBS destinations (client is initialized in constructor).
+func (d *Destination) Connect(ctx context.Context) error { return nil }
+
+// Close is a no-op for OBS destinations.
+func (d *Destination) Close(ctx context.Context) error { return nil }
+
+// BeginTask is a no-op for OBS destinations.
+func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for OBS destinations.
+func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
 func posixMetadata(mode os.FileMode, uid, gid int) map[string]string {
 	return map[string]string{
@@ -232,85 +255,82 @@ func posixMetadata(mode os.FileMode, uid, gid int) map[string]string {
 	}
 }
 
-// --- Small file writer (PutObject on Close) ---
+// --- Small file writer (io.Pipe streaming PutObject) ---
+
+type writerState int
+
+const (
+	stateOpen writerState = iota
+	stateCommitted
+	stateAborted
+)
 
 type smallFileWriter struct {
-	client   *obs.ObsClient
-	bucket   string
-	key      string
-	meta     map[string]string
-	buf      bytes.Buffer
-	md5Hash  hash.Hash
-	retryCfg RetryConfig
-	closed   bool
+	pw    *io.PipeWriter
+	done  chan error
+	md5   hash.Hash
+	state writerState
 }
 
-func newSmallFileWriter(_ context.Context, client *obs.ObsClient, bucket, key string, meta map[string]string, rc RetryConfig) *smallFileWriter {
-	return &smallFileWriter{
-		client:   client,
-		bucket:   bucket,
-		key:      key,
-		meta:     meta,
-		md5Hash:  md5.New(),
-		retryCfg: rc,
-	}
+func newSmallFileWriter(ctx context.Context, client *obs.ObsClient, bucket, key string, _ int64, meta map[string]string, _ RetryConfig) *smallFileWriter {
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := client.PutObject(&obs.PutObjectInput{
+			PutObjectBasicInput: obs.PutObjectBasicInput{
+				ObjectOperationInput: obs.ObjectOperationInput{
+					Bucket:   bucket,
+					Key:      key,
+					Metadata: meta,
+				},
+			},
+			Body: pr,
+		})
+		done <- err
+	}()
+
+	return &smallFileWriter{pw: pw, done: done, md5: md5.New()}
 }
 
-func (w *smallFileWriter) WriteAt(p []byte, _ int64) (int, error) {
-	if w.closed {
+func (w *smallFileWriter) Write(_ context.Context, p []byte) (int, error) {
+	if w.state != stateOpen {
 		return 0, fmt.Errorf("obs: write on closed writer")
 	}
-	n, err := w.buf.Write(p)
+	n, err := w.pw.Write(p)
 	if n > 0 {
-		w.md5Hash.Write(p[:n])
+		w.md5.Write(p[:n])
 	}
 	return n, err
 }
 
-func (w *smallFileWriter) Sync() error { return nil }
-
-func (w *smallFileWriter) Close(ctx context.Context, checksum []byte) error {
-	if w.closed {
+func (w *smallFileWriter) Commit(_ context.Context, checksum []byte) error {
+	if w.state != stateOpen {
 		return nil
 	}
-	w.closed = true
+	w.state = stateCommitted
+	w.pw.Close()
 
-	contentMD5 := w.md5Hash.Sum(nil)
-	if checksum != nil && !bytes.Equal(checksum, contentMD5) {
-		return fmt.Errorf("obs md5 mismatch: client=%x server=%x", checksum, contentMD5)
+	if err := <-w.done; err != nil {
+		return fmt.Errorf("obs put: %w", err)
 	}
-
-	if w.meta == nil {
-		w.meta = make(map[string]string)
-	}
-	w.meta[metaMD5] = hex.EncodeToString(contentMD5)
-
-	out, err := withRetryResult(ctx, w.retryCfg, func() (*obs.PutObjectOutput, error) {
-		return w.client.PutObject(&obs.PutObjectInput{
-			PutObjectBasicInput: obs.PutObjectBasicInput{
-				ObjectOperationInput: obs.ObjectOperationInput{
-					Bucket:   w.bucket,
-					Key:      w.key,
-					Metadata: w.meta,
-				},
-				ContentMD5:    base64.StdEncoding.EncodeToString(contentMD5),
-				ContentLength: int64(w.buf.Len()),
-			},
-			Body: bytes.NewReader(w.buf.Bytes()),
-		})
-	})
-	if err != nil {
-		return fmt.Errorf("obs put %s: %w", w.key, err)
-	}
-
-	if out != nil && out.ETag != "" {
-		etag := strings.ToLower(strings.Trim(out.ETag, `"`))
-		if etag != hex.EncodeToString(contentMD5) {
-			return fmt.Errorf("obs etag mismatch: etag=%s md5=%x", etag, contentMD5)
-		}
+	if checksum != nil && !bytes.Equal(checksum, w.md5.Sum(nil)) {
+		return storage.ErrChecksum
 	}
 	return nil
 }
+
+func (w *smallFileWriter) Abort(_ context.Context) error {
+	if w.state != stateOpen {
+		return nil
+	}
+	w.state = stateAborted
+	w.pw.CloseWithError(io.ErrClosedPipe)
+	<-w.done
+	return nil
+}
+
+func (w *smallFileWriter) BytesWritten() int64 { return 0 }
 
 // --- Multipart file writer ---
 
@@ -325,7 +345,7 @@ type multipartFileWriter struct {
 	partNum  int // OBS uses int (OSS uses int32)
 	md5Hash  hash.Hash
 	retryCfg RetryConfig
-	closed   bool
+	state    writerState
 	ctx      context.Context
 }
 
@@ -355,8 +375,8 @@ func newMultipartFileWriter(ctx context.Context, client *obs.ObsClient, bucket, 
 	}, nil
 }
 
-func (w *multipartFileWriter) WriteAt(p []byte, _ int64) (int, error) {
-	if w.closed {
+func (w *multipartFileWriter) Write(_ context.Context, p []byte) (int, error) {
+	if w.state != stateOpen {
 		return 0, fmt.Errorf("obs: write on closed writer")
 	}
 
@@ -386,8 +406,7 @@ func (w *multipartFileWriter) flushPart() error {
 	}
 
 	w.partNum++
-	data := make([]byte, w.partBuf.Len())
-	copy(data, w.partBuf.Bytes())
+	data := w.partBuf.Bytes()
 	partMD5 := md5.Sum(data)
 
 	out, err := withRetryResult(w.ctx, w.retryCfg, func() (*obs.UploadPartOutput, error) {
@@ -413,13 +432,11 @@ func (w *multipartFileWriter) flushPart() error {
 	return nil
 }
 
-func (w *multipartFileWriter) Sync() error { return nil }
-
-func (w *multipartFileWriter) Close(ctx context.Context, checksum []byte) error {
-	if w.closed {
+func (w *multipartFileWriter) Commit(ctx context.Context, checksum []byte) error {
+	if w.state != stateOpen {
 		return nil
 	}
-	w.closed = true
+	w.state = stateCommitted
 	w.ctx = ctx
 
 	if err := w.flushPart(); err != nil {
@@ -445,6 +462,17 @@ func (w *multipartFileWriter) Close(ctx context.Context, checksum []byte) error 
 	}
 	return nil
 }
+
+func (w *multipartFileWriter) Abort(_ context.Context) error {
+	if w.state != stateOpen {
+		return nil
+	}
+	w.state = stateAborted
+	w.abortUpload()
+	return nil
+}
+
+func (w *multipartFileWriter) BytesWritten() int64 { return 0 }
 
 func (w *multipartFileWriter) abortUpload() {
 	_, _ = w.client.AbortMultipartUpload(&obs.AbortMultipartUploadInput{

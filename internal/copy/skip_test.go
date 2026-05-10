@@ -2,93 +2,98 @@ package copy
 
 import (
 	"testing"
+	"time"
 
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
 func TestMatchSkip(t *testing.T) {
+	t1 := time.Unix(1700000000, 0)
+	t2 := time.Unix(1700000001, 0)
+
 	tests := []struct {
 		name string
-		src  model.DiscoverItem
-		dst  model.DiscoverItem
+		src  storage.DiscoverItem
+		dst  storage.DiscoverItem
 		want bool
 	}{
 		{
 			"dir always matches",
-			model.DiscoverItem{FileType: model.FileDir},
-			model.DiscoverItem{FileType: model.FileDir},
+			storage.DiscoverItem{FileType: model.FileDir},
+			storage.DiscoverItem{FileType: model.FileDir},
 			true,
 		},
 		{
 			"dir vs file mismatch",
-			model.DiscoverItem{FileType: model.FileDir},
-			model.DiscoverItem{FileType: model.FileRegular},
+			storage.DiscoverItem{FileType: model.FileDir},
+			storage.DiscoverItem{FileType: model.FileRegular},
 			false,
 		},
 		{
 			"symlink same target",
-			model.DiscoverItem{FileType: model.FileSymlink, LinkTarget: "a.txt"},
-			model.DiscoverItem{FileType: model.FileSymlink, LinkTarget: "a.txt"},
+			storage.DiscoverItem{FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "a.txt"}},
+			storage.DiscoverItem{FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "a.txt"}},
 			true,
 		},
 		{
 			"symlink different target",
-			model.DiscoverItem{FileType: model.FileSymlink, LinkTarget: "a.txt"},
-			model.DiscoverItem{FileType: model.FileSymlink, LinkTarget: "b.txt"},
+			storage.DiscoverItem{FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "a.txt"}},
+			storage.DiscoverItem{FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "b.txt"}},
 			false,
 		},
 		{
 			"regular same mtime+size",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}},
 			true,
 		},
 		{
 			"regular different size",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 200, Mtime: 1700000000},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 200, Attr: storage.FileAttr{Mtime: t1}},
 			false,
 		},
 		{
 			"regular different mtime",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000001},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t2}},
 			false,
 		},
 		{
 			"regular same etag",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, ETag: "abc"},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, ETag: "abc"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Checksum: []byte("abc"), Algorithm: "etag-md5"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Checksum: []byte("abc"), Algorithm: "etag-md5"},
 			true,
 		},
 		{
 			"regular different etag",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, ETag: "abc"},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, ETag: "def"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Checksum: []byte("abc"), Algorithm: "etag-md5"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Checksum: []byte("def"), Algorithm: "etag-md5"},
 			false,
 		},
 		{
 			"regular etag beats mtime",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000, ETag: "abc"},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000, ETag: "abc"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}, Checksum: []byte("abc"), Algorithm: "etag-md5"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}, Checksum: []byte("abc"), Algorithm: "etag-md5"},
 			true,
 		},
 		{
 			"regular etag mismatch even if mtime matches",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000, ETag: "abc"},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000, ETag: "def"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}, Checksum: []byte("abc"), Algorithm: "etag-md5"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}, Checksum: []byte("def"), Algorithm: "etag-md5"},
 			false,
 		},
 		{
 			"regular zero mtime no etag",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 0},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 0},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100},
 			false,
 		},
 		{
 			"regular one side etag other side mtime",
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, ETag: "abc"},
-			model.DiscoverItem{FileType: model.FileRegular, FileSize: 100, Mtime: 1700000000},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Checksum: []byte("abc"), Algorithm: "etag-md5"},
+			storage.DiscoverItem{FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mtime: t1}},
 			false,
 		},
 	}

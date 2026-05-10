@@ -1,7 +1,9 @@
 package copy
 
 import (
+	"bytes"
 	"context"
+	"errors"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -10,14 +12,12 @@ import (
 // ShouldSkipCopy checks if a file can be skipped during copy.
 // Returns true if dst already has an identical file (same mtime+size for local,
 // or matching ETag for OSS single-part uploads).
-func ShouldSkipCopy(ctx context.Context, dst storage.Destination, item model.DiscoverItem) (bool, error) {
-	restatter, ok := dst.(storage.Restatter)
-	if !ok {
-		return false, nil
-	}
-
-	dstItem, err := restatter.Restat(ctx, item.RelPath)
+func ShouldSkipCopy(ctx context.Context, dst storage.Destination, item storage.DiscoverItem) (bool, error) {
+	dstItem, err := dst.Stat(ctx, item.RelPath)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return false, nil
+		}
 		return false, nil
 	}
 
@@ -25,7 +25,7 @@ func ShouldSkipCopy(ctx context.Context, dst storage.Destination, item model.Dis
 }
 
 // MatchSkip determines if src and dst items are identical for skip purposes.
-func MatchSkip(src, dst model.DiscoverItem) bool {
+func MatchSkip(src, dst storage.DiscoverItem) bool {
 	if src.FileType != dst.FileType {
 		return false
 	}
@@ -34,15 +34,15 @@ func MatchSkip(src, dst model.DiscoverItem) bool {
 	case model.FileDir:
 		return true
 	case model.FileSymlink:
-		return src.LinkTarget == dst.LinkTarget
+		return src.Attr.SymlinkTarget == dst.Attr.SymlinkTarget
 	case model.FileRegular:
-		if src.FileSize != dst.FileSize {
+		if src.Size != dst.Size {
 			return false
 		}
-		if src.ETag != "" && dst.ETag != "" {
-			return src.ETag == dst.ETag
+		if len(src.Checksum) > 0 && len(dst.Checksum) > 0 {
+			return bytes.Equal(src.Checksum, dst.Checksum) && src.Algorithm == dst.Algorithm
 		}
-		if src.Mtime != 0 && src.Mtime == dst.Mtime {
+		if !src.Attr.Mtime.IsZero() && src.Attr.Mtime.Equal(dst.Attr.Mtime) {
 			return true
 		}
 		return false

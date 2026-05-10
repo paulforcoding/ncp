@@ -1,6 +1,7 @@
 package cksum
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -34,20 +35,20 @@ func NewCksumWorker(id int, src, dst storage.Source, fileLog copy.FileLogger, io
 }
 
 // Run consumes items from cksumCh and sends results to resultCh.
-func (w *CksumWorker) Run(cksumCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) {
+func (w *CksumWorker) Run(ctx context.Context, cksumCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) {
 	for item := range cksumCh {
-		result := w.cksumOne(item)
+		result := w.cksumOne(ctx, item)
 		resultCh <- result
 	}
 }
 
-func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
+func (w *CksumWorker) cksumOne(ctx context.Context, item storage.DiscoverItem) model.FileResult {
 	if w.skipByMtime {
-		if skipped, _ := ShouldSkipCksum(w.dst, item); skipped {
+		if skipped, _ := ShouldSkipCksum(ctx, w.dst, item); skipped {
 			return model.FileResult{
 				RelPath:     item.RelPath,
 				FileType:    item.FileType,
-				FileSize:    item.FileSize,
+				FileSize:    item.Size,
 				CksumStatus: model.CksumPass,
 				Skipped:     true,
 				Algorithm:   string(w.cksumAlgo),
@@ -57,16 +58,16 @@ func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
 
 	switch item.FileType {
 	case model.FileRegular:
-		return w.cksumFile(item)
+		return w.cksumFile(ctx, item)
 	case model.FileDir:
-		return w.cksumDir(item)
+		return w.cksumDir(ctx, item)
 	case model.FileSymlink:
-		return w.cksumSymlink(item)
+		return w.cksumSymlink(ctx, item)
 	default:
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
-			FileSize:    item.FileSize,
+			FileSize:    item.Size,
 			CksumStatus: model.CksumError,
 			Algorithm:   string(w.cksumAlgo),
 			Err:         fmt.Errorf("unknown file type %d", item.FileType),
@@ -74,13 +75,13 @@ func (w *CksumWorker) cksumOne(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
-	srcHash, err := w.computeHash(w.src, item.RelPath)
+func (w *CksumWorker) cksumFile(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	srcHash, err := w.computeHash(ctx, w.src, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
-			FileSize:    item.FileSize,
+			FileSize:    item.Size,
 			CksumStatus: model.CksumError,
 			Algorithm:   string(w.cksumAlgo),
 			SrcHash:     srcHash,
@@ -88,12 +89,12 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 		}
 	}
 
-	dstHash, err := w.computeHash(w.dst, item.RelPath)
+	dstHash, err := w.computeHash(ctx, w.dst, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
-			FileSize:    item.FileSize,
+			FileSize:    item.Size,
 			CksumStatus: model.CksumMismatch,
 			Algorithm:   string(w.cksumAlgo),
 			SrcHash:     srcHash,
@@ -106,7 +107,7 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
-			FileSize:    item.FileSize,
+			FileSize:    item.Size,
 			CksumStatus: model.CksumPass,
 			Algorithm:   string(w.cksumAlgo),
 			SrcHash:     srcHash,
@@ -117,7 +118,7 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	return model.FileResult{
 		RelPath:     item.RelPath,
 		FileType:    item.FileType,
-		FileSize:    item.FileSize,
+		FileSize:    item.Size,
 		CksumStatus: model.CksumMismatch,
 		Algorithm:   string(w.cksumAlgo),
 		SrcHash:     srcHash,
@@ -126,12 +127,12 @@ func (w *CksumWorker) cksumFile(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (w *CksumWorker) computeHash(src storage.Source, relPath string) (string, error) {
-	reader, err := src.Open(relPath)
+func (w *CksumWorker) computeHash(ctx context.Context, src storage.Source, relPath string) (string, error) {
+	reader, err := src.Open(ctx, relPath)
 	if err != nil {
 		return "", err
 	}
-	defer reader.Close()
+	defer reader.Close(ctx)
 
 	bufSize := w.ioSize
 	if bufSize <= 0 {
@@ -140,12 +141,10 @@ func (w *CksumWorker) computeHash(src storage.Source, relPath string) (string, e
 	buf := make([]byte, bufSize)
 
 	h := copy.NewHasher(w.cksumAlgo)
-	var offset int64
 	for {
-		n, readErr := reader.ReadAt(buf, offset)
+		n, readErr := reader.Read(ctx, buf)
 		if n > 0 {
 			h.Write(buf[:n])
-			offset += int64(n)
 		}
 		if readErr == io.EOF {
 			break
@@ -158,8 +157,8 @@ func (w *CksumWorker) computeHash(src storage.Source, relPath string) (string, e
 	return copy.SumToHex(h), nil
 }
 
-func (w *CksumWorker) cksumDir(item model.DiscoverItem) model.FileResult {
-	dstItem, err := w.dst.Restat(item.RelPath)
+func (w *CksumWorker) cksumDir(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	dstItem, err := w.dst.Stat(ctx, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
@@ -167,7 +166,7 @@ func (w *CksumWorker) cksumDir(item model.DiscoverItem) model.FileResult {
 			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
 			Algorithm:   string(w.cksumAlgo),
-			Err:         fmt.Errorf("dst restat dir: %w", err),
+			Err:         fmt.Errorf("dst stat dir: %w", err),
 		}
 	}
 	if dstItem.FileType != model.FileDir {
@@ -189,8 +188,8 @@ func (w *CksumWorker) cksumDir(item model.DiscoverItem) model.FileResult {
 	}
 }
 
-func (w *CksumWorker) cksumSymlink(item model.DiscoverItem) model.FileResult {
-	dstItem, err := w.dst.Restat(item.RelPath)
+func (w *CksumWorker) cksumSymlink(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	dstItem, err := w.dst.Stat(ctx, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
@@ -198,7 +197,7 @@ func (w *CksumWorker) cksumSymlink(item model.DiscoverItem) model.FileResult {
 			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
 			Algorithm:   string(w.cksumAlgo),
-			Err:         fmt.Errorf("dst restat symlink: %w", err),
+			Err:         fmt.Errorf("dst stat symlink: %w", err),
 		}
 	}
 	if dstItem.FileType != model.FileSymlink {
@@ -211,14 +210,14 @@ func (w *CksumWorker) cksumSymlink(item model.DiscoverItem) model.FileResult {
 			Err:         fmt.Errorf("dst is not a symlink"),
 		}
 	}
-	if dstItem.LinkTarget != item.LinkTarget {
+	if dstItem.Attr.SymlinkTarget != item.Attr.SymlinkTarget {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
 			FileSize:    0,
 			CksumStatus: model.CksumMismatch,
 			Algorithm:   string(w.cksumAlgo),
-			Err:         fmt.Errorf("symlink target mismatch: src=%q dst=%q", item.LinkTarget, dstItem.LinkTarget),
+			Err:         fmt.Errorf("symlink target mismatch: src=%q dst=%q", item.Attr.SymlinkTarget, dstItem.Attr.SymlinkTarget),
 		}
 	}
 	return model.FileResult{

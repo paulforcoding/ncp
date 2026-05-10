@@ -2,10 +2,13 @@ package aliyun
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
@@ -48,7 +51,7 @@ func NewSource(cfg SourceConfig) (*Source, error) {
 
 // Walk traverses all objects under prefix using ListObjectsV2 pagination.
 // Keys are returned in lexicographic order (DFS property preserved).
-func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	var continuationToken *string
 
 	for {
@@ -81,7 +84,7 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 				continue
 			}
 
-			if err := fn(item); err != nil {
+			if err := fn(ctx, item); err != nil {
 				return err
 			}
 
@@ -101,33 +104,43 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 	return nil
 }
 
-// Open opens an OSS object for reading with Range support (ReadAt semantics).
-func (s *Source) Open(relPath string) (storage.Reader, error) {
+// Open opens an OSS object for streaming read.
+func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	key := s.prefix + relPath
 
-	// HeadObject to get content length for ReadAt range construction
-	result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+	result, err := s.client.GetObject(ctx, &oss.GetObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("aliyun head %s: %w", relPath, err)
+		return nil, fmt.Errorf("aliyun get %s: %w", relPath, err)
+	}
+
+	attr := storage.FileAttr{}
+	if result.Metadata != nil {
+		attr.Mode = parseMode(result.Metadata[metaMode])
+		attr.Uid = parseInt(result.Metadata[metaUID])
+		attr.Gid = parseInt(result.Metadata[metaGID])
+		if mtime := parseInt64(result.Metadata[metaMtime]); mtime != 0 {
+			attr.Mtime = time.Unix(0, mtime)
+		}
+	}
+	if attr.Mode == 0 {
+		attr.Mode = 0o644
 	}
 
 	return &Reader{
-		client:   s.client,
-		bucket:   s.bucket,
-		key:      key,
-		size:     result.ContentLength,
-		metadata: result.Metadata,
+		body: result.Body,
+		size: result.ContentLength,
+		attr: attr,
 	}, nil
 }
 
-// Restat rebuilds a DiscoverItem by heading the object.
-func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
+// Stat rebuilds a DiscoverItem by heading the object.
+func (s *Source) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := s.prefix + relPath
 
-	result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+	result, err := s.client.HeadObject(ctx, &oss.HeadObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(key),
 	})
@@ -135,12 +148,12 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		// Directory marker objects in OSS have a trailing "/" in the key.
 		// If the direct lookup fails, try with "/" appended.
 		dirKey := key + "/"
-		result, err = s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
+		result, err = s.client.HeadObject(ctx, &oss.HeadObjectRequest{
 			Bucket: oss.Ptr(s.bucket),
 			Key:    oss.Ptr(dirKey),
 		})
 		if err != nil {
-			return model.DiscoverItem{}, fmt.Errorf("aliyun restat %s: %w", relPath, err)
+			return storage.DiscoverItem{}, fmt.Errorf("aliyun stat %s: %w", relPath, err)
 		}
 		key = dirKey
 	}
@@ -158,30 +171,32 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		ft = model.FileRegular
 	}
 
-	item := model.DiscoverItem{
-		SrcBase:  "oss://" + s.bucket + "/" + s.prefix,
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: result.ContentLength,
+		Size:     result.ContentLength,
 	}
 
 	if result.ETag != nil {
-		item.ETag = strings.ToLower(strings.Trim(*result.ETag, `"`))
+		item.Checksum, item.Algorithm = parseETag(*result.ETag)
 	}
 
 	if result.Metadata != nil {
-		item.Mode = parseMode(result.Metadata[metaMode])
-		item.Uid = parseInt(result.Metadata[metaUID])
-		item.Gid = parseInt(result.Metadata[metaGID])
+		item.Attr.Mode = parseMode(result.Metadata[metaMode])
+		item.Attr.Uid = parseInt(result.Metadata[metaUID])
+		item.Attr.Gid = parseInt(result.Metadata[metaGID])
+		if mtime := parseInt64(result.Metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if ft == model.FileSymlink {
-			item.LinkTarget = result.Metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = result.Metadata[metaSymlinkTarget]
 		}
 	}
-	if item.Mode == 0 {
+	if item.Attr.Mode == 0 {
 		if isDir {
-			item.Mode = 0o755
+			item.Attr.Mode = 0o755
 		} else {
-			item.Mode = 0o644
+			item.Attr.Mode = 0o644
 		}
 	}
 
@@ -189,19 +204,30 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 }
 
 // Base returns the source base URI.
-func (s *Source) Base() string {
+func (s *Source) URI() string {
 	return "oss://" + s.bucket + "/" + s.prefix
 }
 
-func (s *Source) objectToItem(key, relPath string, size int64, etag string) (model.DiscoverItem, error) {
+// Connect is a no-op for OSS sources (client is initialized in constructor).
+func (s *Source) Connect(ctx context.Context) error { return nil }
+
+// Close is a no-op for OSS sources.
+func (s *Source) Close(ctx context.Context) error { return nil }
+
+// BeginTask is a no-op for OSS sources.
+func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for OSS sources.
+func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+func (s *Source) objectToItem(key, relPath string, size int64, etag string) (storage.DiscoverItem, error) {
 	isDir := strings.HasSuffix(key, "/")
 
 	if isDir {
-		item := model.DiscoverItem{
-			SrcBase:  "oss://" + s.bucket + "/" + s.prefix,
+		item := storage.DiscoverItem{
 			RelPath:  strings.TrimSuffix(relPath, "/"),
 			FileType: model.FileDir,
-			FileSize: 0,
+			Size:     0,
 		}
 
 		result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
@@ -209,42 +235,45 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 			Key:    oss.Ptr(key),
 		})
 		if err == nil && result.Metadata != nil {
-			item.Mode = parseMode(result.Metadata[metaMode])
-			item.Uid = parseInt(result.Metadata[metaUID])
-			item.Gid = parseInt(result.Metadata[metaGID])
-			item.Mtime = parseInt64(result.Metadata[metaMtime])
+			item.Attr.Mode = parseMode(result.Metadata[metaMode])
+			item.Attr.Uid = parseInt(result.Metadata[metaUID])
+			item.Attr.Gid = parseInt(result.Metadata[metaGID])
+			if mtime := parseInt64(result.Metadata[metaMtime]); mtime != 0 {
+				item.Attr.Mtime = time.Unix(0, mtime)
+			}
 		}
-		if item.Mode == 0 {
-			item.Mode = 0o755
+		if item.Attr.Mode == 0 {
+			item.Attr.Mode = 0o755
 		}
 
 		return item, nil
 	}
 
-	item := model.DiscoverItem{
-		SrcBase:  "oss://" + s.bucket + "/" + s.prefix,
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: model.FileRegular,
-		FileSize: size,
-		ETag:     strings.ToLower(strings.Trim(etag, `"`)),
+		Size:     size,
 	}
+	item.Checksum, item.Algorithm = parseETag(etag)
 
 	result, err := s.client.HeadObject(context.Background(), &oss.HeadObjectRequest{
 		Bucket: oss.Ptr(s.bucket),
 		Key:    oss.Ptr(key),
 	})
 	if err == nil && result.Metadata != nil {
-		item.Mode = parseMode(result.Metadata[metaMode])
-		item.Uid = parseInt(result.Metadata[metaUID])
-		item.Gid = parseInt(result.Metadata[metaGID])
-		item.Mtime = parseInt64(result.Metadata[metaMtime])
+		item.Attr.Mode = parseMode(result.Metadata[metaMode])
+		item.Attr.Uid = parseInt(result.Metadata[metaUID])
+		item.Attr.Gid = parseInt(result.Metadata[metaGID])
+		if mtime := parseInt64(result.Metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if result.Metadata[metaSymlinkTarget] != "" {
 			item.FileType = model.FileSymlink
-			item.LinkTarget = result.Metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = result.Metadata[metaSymlinkTarget]
 		}
 	}
-	if item.Mode == 0 {
-		item.Mode = 0o644
+	if item.Attr.Mode == 0 {
+		item.Attr.Mode = 0o644
 	}
 
 	return item, nil
@@ -252,60 +281,53 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 
 // --- Reader ---
 
-// Reader implements storage.Reader for OSS objects using HTTP Range requests.
+// Reader implements storage.FileReader for OSS objects using a streaming GetObject body.
 type Reader struct {
-	client   *oss.Client
-	bucket   string
-	key      string
-	size     int64
-	metadata map[string]string
+	body io.ReadCloser
+	size int64
+	attr storage.FileAttr
 }
 
-var _ storage.Reader = (*Reader)(nil)
+var _ storage.FileReader = (*Reader)(nil)
 
-// ReadAt reads len(p) bytes from the object starting at byte offset off.
-// Uses HTTP Range header for partial downloads.
-func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
-	if off >= r.size {
-		return 0, io.EOF
-	}
-
-	end := off + int64(len(p)) - 1
-	if end >= r.size {
-		end = r.size - 1
-	}
-
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
-
-	result, err := r.client.GetObject(context.Background(), &oss.GetObjectRequest{
-		Bucket: oss.Ptr(r.bucket),
-		Key:    oss.Ptr(r.key),
-		Range:  oss.Ptr(rangeHeader),
-	})
-	if err != nil {
-		return 0, fmt.Errorf("aliyun get range %s [%d-%d]: %w", r.key, off, end, err)
-	}
-	defer result.Body.Close()
-
-	n, err := io.ReadFull(result.Body, p)
-	if err == io.ErrUnexpectedEOF {
-		return n, nil
-	}
-	if err == io.EOF && n == 0 {
-		return 0, io.EOF
-	}
-	return n, err
+// Read reads up to len(p) bytes from the object body.
+func (r *Reader) Read(ctx context.Context, p []byte) (int, error) {
+	return r.body.Read(p)
 }
 
-// Close is a no-op for OSS Reader (no persistent connection to close).
-func (r *Reader) Close() error { return nil }
+// Close closes the underlying object body.
+func (r *Reader) Close(ctx context.Context) error {
+	return r.body.Close()
+}
 
-// Metadata returns the object's custom metadata headers.
-func (r *Reader) Metadata() map[string]string { return r.metadata }
+// Size returns the object content length.
+func (r *Reader) Size() int64 { return r.size }
+
+// Attr returns the object metadata.
+func (r *Reader) Attr() storage.FileAttr { return r.attr }
 
 // --- Helpers ---
 
-func parseMode(s string) uint32 {
+// parseETag converts an OSS ETag string into (checksum []byte, algorithm string).
+// Single-part objects have an ETag that is a lowercase hex MD5 (decoded to bytes,
+// algorithm "etag-md5"). Multipart objects have ETags of the form "<md5-of-md5s>-<N>"
+// which cannot be decoded to bytes; the literal string is stored as UTF-8 bytes
+// with algorithm "etag-multipart".
+func parseETag(etag string) ([]byte, string) {
+	etag = strings.ToLower(strings.Trim(etag, `"`))
+	if etag == "" {
+		return nil, ""
+	}
+	if strings.Contains(etag, "-") {
+		return []byte(etag), "etag-multipart"
+	}
+	if b, err := hex.DecodeString(etag); err == nil {
+		return b, "etag-md5"
+	}
+	return []byte(etag), "etag-multipart"
+}
+
+func parseMode(s string) os.FileMode {
 	if s == "" {
 		return 0
 	}
@@ -313,7 +335,7 @@ func parseMode(s string) uint32 {
 	if err != nil {
 		return 0
 	}
-	return uint32(m)
+	return os.FileMode(m)
 }
 
 func parseInt(s string) int {

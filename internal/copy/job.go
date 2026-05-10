@@ -70,7 +70,7 @@ func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 
 // Run executes the copy job and blocks until completion.
 func (j *Job) Run(ctx context.Context) (int, error) {
-	discoverCh := make(chan model.DiscoverItem, j.channelBuf)
+	discoverCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
@@ -99,14 +99,14 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
-func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- model.DiscoverItem) error {
+func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- storage.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
 		return fmt.Errorf("check walk_complete: %w", err)
 	}
 
 	if hasWalkComplete {
-		walker.ResumeFromDB(discoverCh)
+		walker.ResumeFromDB(ctx, discoverCh)
 		return nil
 	}
 
@@ -120,7 +120,7 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 	return freshWalker.Run(ctx, discoverCh)
 }
 
-func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
@@ -131,16 +131,16 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan model.Disc
 				var err error
 				dst, err = j.dstFactory(id)
 				if err != nil {
-					for item := range discoverCh {
-						resultCh <- model.FileResult{
-							RelPath:    item.RelPath,
-							FileType:   item.FileType,
-							FileSize:   item.FileSize,
-							CopyStatus: model.CopyError,
-							Algorithm:  string(j.cksumAlgo),
-							Err:        fmt.Errorf("create destination for replicator %d: %w", id, err),
-						}
-					}
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				if err := dst.Connect(ctx); err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				defer dst.Close(ctx)
+				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
 					return
 				}
 			}
@@ -149,6 +149,19 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan model.Disc
 		}(i)
 	}
 	return &wg
+}
+
+func (j *Job) sendFactoryError(id int, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult, err error) {
+	for item := range discoverCh {
+		resultCh <- model.FileResult{
+			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.Size,
+			CopyStatus: model.CopyError,
+			Algorithm:  string(j.cksumAlgo),
+			Err:        fmt.Errorf("destination setup for replicator %d: %w", id, err),
+		}
+	}
 }
 
 func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult) *sync.WaitGroup {

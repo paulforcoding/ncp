@@ -2,8 +2,10 @@ package local
 
 import (
 	"context"
+	"fmt"
 	"os"
 
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -23,30 +25,37 @@ func DefaultWriterConfig() WriterConfig {
 	}
 }
 
-// Writer wraps os.File and provides WriteAt (pwrite) semantics
-// with configurable DirectIO, SyncWrites, and IOSizeTiers.
+// Writer wraps os.File and implements storage.FileWriter.
 type Writer struct {
-	f    *os.File
-	cfg  WriterConfig
-	size int64 // expected file size for IOSize tier resolution
+	f            *os.File
+	cfg          WriterConfig
+	size         int64
+	bytesWritten int64
+	committed    bool
+	aborted      bool
 }
 
-// WriteAt writes len(p) bytes to the file starting at byte offset off.
-func (w *Writer) WriteAt(p []byte, off int64) (int, error) {
-	return w.f.WriteAt(p, off)
-}
+var _ storage.FileWriter = (*Writer)(nil)
 
-// Sync calls fsync on the underlying file if SyncWrites is enabled.
-func (w *Writer) Sync() error {
-	if w.cfg.SyncWrites {
-		return w.f.Sync()
+// Write writes len(p) bytes to the file.
+func (w *Writer) Write(_ context.Context, p []byte) (int, error) {
+	if w.committed || w.aborted {
+		return 0, fmt.Errorf("local: write on closed writer")
 	}
-	return nil
+	n, err := w.f.Write(p)
+	if n > 0 {
+		w.bytesWritten += int64(n)
+	}
+	return n, err
 }
 
-// Close closes the file. SyncWrites triggers a final fsync before close.
+// Commit closes the file. SyncWrites triggers a final fsync before close.
 // The checksum parameter is ignored for local copies.
-func (w *Writer) Close(_ context.Context, _ []byte) error {
+func (w *Writer) Commit(_ context.Context, _ []byte) error {
+	if w.committed || w.aborted {
+		return nil
+	}
+	w.committed = true
 	var syncErr error
 	if w.cfg.SyncWrites {
 		syncErr = w.f.Sync()
@@ -57,6 +66,19 @@ func (w *Writer) Close(_ context.Context, _ []byte) error {
 	}
 	return closeErr
 }
+
+// Abort closes the file and removes it.
+func (w *Writer) Abort(_ context.Context) error {
+	if w.committed || w.aborted {
+		return nil
+	}
+	w.aborted = true
+	_ = w.f.Close()
+	return os.Remove(w.f.Name())
+}
+
+// BytesWritten returns the number of bytes written so far.
+func (w *Writer) BytesWritten() int64 { return w.bytesWritten }
 
 // Fd returns the underlying file descriptor.
 func (w *Writer) Fd() uintptr {
