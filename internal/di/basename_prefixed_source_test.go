@@ -34,9 +34,9 @@ func (m *mockSource) Stat(_ context.Context, relPath string) (storage.DiscoverIt
 
 func (m *mockSource) URI() string { return m.base }
 
-func (m *mockSource) Connect(ctx context.Context) error  { return nil }
-func (m *mockSource) Close(ctx context.Context) error    { return nil }
-func (m *mockSource) BeginTask(ctx context.Context, taskID string) error { return nil }
+func (m *mockSource) Connect(ctx context.Context) error                              { return nil }
+func (m *mockSource) Close(ctx context.Context) error                                { return nil }
+func (m *mockSource) BeginTask(ctx context.Context, taskID string) error             { return nil }
 func (m *mockSource) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
 func TestBasenamePrefixedSource_SingleDir(t *testing.T) {

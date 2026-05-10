@@ -7,16 +7,16 @@ import (
 
 // Client → Server message types (0x0X)
 const (
-	MsgOpen     uint8 = 0x01
-	MsgPwrite   uint8 = 0x02
-	MsgFsync    uint8 = 0x03
-	MsgClose    uint8 = 0x04
-	MsgMkdir    uint8 = 0x05
-	MsgSymlink  uint8 = 0x06
-	MsgUtime    uint8 = 0x07
-	MsgSetxattr uint8 = 0x08
-	MsgTaskDone uint8 = 0x09
-	MsgInit     uint8 = 0x0A
+	MsgOpen      uint8 = 0x01
+	MsgPwrite    uint8 = 0x02
+	MsgFsync     uint8 = 0x03
+	MsgClose     uint8 = 0x04
+	MsgMkdir     uint8 = 0x05
+	MsgSymlink   uint8 = 0x06
+	MsgUtime     uint8 = 0x07
+	MsgSetxattr  uint8 = 0x08
+	MsgTaskDone  uint8 = 0x09
+	MsgInit      uint8 = 0x0A
 	MsgList      uint8 = 0x0B
 	MsgPread     uint8 = 0x0C
 	MsgStat      uint8 = 0x0D

@@ -285,11 +285,11 @@ func newSmallFileWriter(ctx context.Context, client *oss.Client, bucket, key str
 
 	go func() {
 		req := &oss.PutObjectRequest{
-			Bucket:     oss.Ptr(bucket),
-			Key:        oss.Ptr(key),
-			Body:       pr,
+			Bucket:        oss.Ptr(bucket),
+			Key:           oss.Ptr(key),
+			Body:          pr,
 			ContentLength: oss.Ptr(size),
-			Metadata:   meta,
+			Metadata:      meta,
 		}
 		_, err := client.PutObject(ctx, req)
 		done <- err

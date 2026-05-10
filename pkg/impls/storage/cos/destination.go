@@ -34,7 +34,6 @@ const (
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
 	metaXattrPrefix   = metaPrefix + "xattr-"
-
 )
 
 // Destination implements storage.Destination for Tencent Cloud COS.

@@ -33,10 +33,10 @@ type DiscoverItem struct {
 // (e.g. fmt.Errorf("aliyun head %s: %w", relPath, ErrNotFound)) so callers can
 // inspect with errors.Is.
 var (
-	ErrNotFound       = errors.New("storage: not found")
-	ErrAlreadyExists  = errors.New("storage: already exists")
-	ErrPermission     = errors.New("storage: permission denied")
+	ErrNotFound        = errors.New("storage: not found")
+	ErrAlreadyExists   = errors.New("storage: already exists")
+	ErrPermission      = errors.New("storage: permission denied")
 	ErrInvalidArgument = errors.New("storage: invalid argument")
-	ErrChecksum       = errors.New("storage: checksum mismatch")
-	ErrUnsupported    = errors.New("storage: operation not supported")
+	ErrChecksum        = errors.New("storage: checksum mismatch")
+	ErrUnsupported     = errors.New("storage: operation not supported")
 )
