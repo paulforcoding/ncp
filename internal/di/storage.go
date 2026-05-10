@@ -21,22 +21,15 @@ type DestConfig struct {
 	IOSizeTiers []model.IOSizeTier
 }
 
-// OSSConfig holds Alibaba Cloud OSS configuration.
-type OSSConfig struct {
-	Endpoint string
-	Region   string
-	AK       string
-	SK       string
-}
-
-// NewSource creates a Source based on the URL scheme of srcPath.
-func NewSource(srcPath string) (storage.Source, error) {
-	return NewSourceWithOSS(srcPath, OSSConfig{})
-}
-
-// NewSourceWithOSS creates a Source with optional OSS configuration.
-func NewSourceWithOSS(srcPath string, ossCfg OSSConfig) (storage.Source, error) {
+// NewSource creates a Source from srcPath. Cloud schemes require a profile
+// reference embedded in the URL userinfo (e.g. oss://prod@bkt/path); local
+// and ncp:// schemes must NOT carry userinfo.
+func NewSource(srcPath string, profiles map[string]model.Profile) (storage.Source, error) {
 	u, err := ParsePath(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	prof, err := resolveProfile(u, profiles)
 	if err != nil {
 		return nil, err
 	}
@@ -46,24 +39,33 @@ func NewSourceWithOSS(srcPath string, ossCfg OSSConfig) (storage.Source, error) 
 	case "ncp":
 		return remote.NewSource(u.Host, u.Path)
 	case "oss":
-		return newOSSSource(u, ossCfg)
+		bucket, prefix := parseOSSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("oss: bucket name required in URL (oss://<profile>@bucket/prefix)")
+		}
+		return aliyun.NewSource(aliyun.SourceConfig{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported source scheme: %s", u.Scheme)
 	}
 }
 
-// NewDestination creates a Destination based on the URL scheme of dstPath.
-func NewDestination(dstPath string) (storage.Destination, error) {
-	return NewDestinationWithConfig(dstPath, DestConfig{}, OSSConfig{})
-}
-
-// NewDestinationWithConfig creates a Destination with IO configuration.
-func NewDestinationWithConfig(dstPath string, cfg DestConfig, ossCfg ...OSSConfig) (storage.Destination, error) {
+// NewDestination creates a Destination from dstPath. Profile rules match NewSource.
+func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Profile) (storage.Destination, error) {
 	u, err := ParsePath(dstPath)
 	if err != nil {
 		return nil, err
 	}
-
+	prof, err := resolveProfile(u, profiles)
+	if err != nil {
+		return nil, err
+	}
 	switch u.Scheme {
 	case "", "file":
 		wcfg := local.WriterConfig{
@@ -82,48 +84,66 @@ func NewDestinationWithConfig(dstPath string, cfg DestConfig, ossCfg ...OSSConfi
 	case "ncp":
 		return remote.NewDestination(u.Host, u.Path)
 	case "oss":
-		var oc OSSConfig
-		if len(ossCfg) > 0 {
-			oc = ossCfg[0]
+		bucket, prefix := parseOSSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("oss: bucket name required in URL (oss://<profile>@bucket/prefix)")
 		}
-		return newOSSDestination(u, oc)
+		return aliyun.NewDestination(aliyun.Config{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported destination scheme: %s", u.Scheme)
 	}
 }
 
-func newOSSDestination(u *url.URL, cfg OSSConfig) (*aliyun.Destination, error) {
-	bucket, prefix := parseOSSURL(u)
-	if bucket == "" {
-		return nil, fmt.Errorf("oss: bucket name required in URL (oss://bucket/prefix)")
+// resolveProfile validates that the URL's profile reference (or absence of one)
+// is consistent with the scheme, then returns the matching profile.
+//
+// Rules:
+//   - Local / ncp:// URLs MUST NOT carry userinfo.
+//   - Cloud URLs (per model.CloudSchemes) MUST carry a profile name in userinfo,
+//     no password, and the named profile must exist in `profiles` with a
+//     matching Provider.
+//
+// Returns (nil, nil) when the URL needs no profile (local / ncp).
+func resolveProfile(u *url.URL, profiles map[string]model.Profile) (*model.Profile, error) {
+	if !model.IsCloudScheme(u.Scheme) {
+		if u.User != nil {
+			return nil, fmt.Errorf("scheme %q does not accept a profile, but URL contains userinfo %q",
+				u.Scheme, u.User.Username())
+		}
+		return nil, nil
 	}
-	return aliyun.NewDestination(aliyun.Config{
-		Endpoint: cfg.Endpoint,
-		Region:   cfg.Region,
-		AK:       cfg.AK,
-		SK:       cfg.SK,
-		Bucket:   bucket,
-		Prefix:   prefix,
-	})
-}
 
-func newOSSSource(u *url.URL, cfg OSSConfig) (*aliyun.Source, error) {
-	bucket, prefix := parseOSSURL(u)
-	if bucket == "" {
-		return nil, fmt.Errorf("oss: bucket name required in URL (oss://bucket/prefix)")
+	if u.User == nil {
+		return nil, fmt.Errorf("scheme %q requires a profile; use form: %s://<profile>@<bucket>/<path>",
+			u.Scheme, u.Scheme)
 	}
-	return aliyun.NewSource(aliyun.SourceConfig{
-		Endpoint: cfg.Endpoint,
-		Region:   cfg.Region,
-		AK:       cfg.AK,
-		SK:       cfg.SK,
-		Bucket:   bucket,
-		Prefix:   prefix,
-	})
+	if _, hasPwd := u.User.Password(); hasPwd {
+		return nil, fmt.Errorf("scheme %q: embedding password in URL is not allowed; reference a profile name only",
+			u.Scheme)
+	}
+	name := u.User.Username()
+	if name == "" {
+		return nil, fmt.Errorf("scheme %q: empty profile name in URL", u.Scheme)
+	}
+	prof, ok := profiles[name]
+	if !ok {
+		return nil, fmt.Errorf("profile %q referenced in URL is not defined in ncp_config.json", name)
+	}
+	if err := prof.Validate(name, u.Scheme); err != nil {
+		return nil, err
+	}
+	return &prof, nil
 }
 
 // parseOSSURL extracts bucket and prefix from an oss:// URL.
-// oss://mybucket/path/to/dir → bucket="mybucket", prefix="path/to/dir/"
+// oss://prod@mybucket/path/to/dir → bucket="mybucket", prefix="path/to/dir/"
 func parseOSSURL(u *url.URL) (bucket, prefix string) {
 	bucket = u.Host
 	prefix = strings.TrimPrefix(u.Path, "/")
@@ -133,6 +153,8 @@ func parseOSSURL(u *url.URL) (bucket, prefix string) {
 	return bucket, prefix
 }
 
+// ParsePath turns a string into a *url.URL. Local paths (no "://") are
+// resolved to absolute paths and returned with empty scheme.
 func ParsePath(p string) (*url.URL, error) {
 	if !strings.Contains(p, "://") {
 		abs, err := filepath.Abs(p)

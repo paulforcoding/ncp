@@ -33,11 +33,11 @@ ncp uses URL-style path prefixes to select the storage backend:
 |--------|--------|--------|-------------|---------|
 | *(none)* | `/path/to/dir` | Yes | Yes | `/data/project` |
 | `ncp://` | `ncp://host:port/path` | No | Yes | `ncp://server:9900/backup` |
-| `oss://` | `oss://bucket/prefix/` | Yes | Yes | `oss://my-bucket/backup/` |
+| `oss://` | `oss://<profile>@bucket/prefix/` | Yes | Yes | `oss://prod@my-bucket/backup/` |
 
 **Constraints:**
 - `ncp://` is destination-only (remote server receives pushes).
-- `oss://` paths require additional OSS parameters (`--endpoint`, `--region`, `--access-key-id`, `--access-key-secret`).
+- `oss://` requires a `<profile>@` prefix referencing a profile defined in `ncp_config.json`. Local and `ncp://` URLs MUST NOT carry a profile.
 
 ### Path Semantics
 
@@ -52,7 +52,7 @@ ncp copy /data/logs /data/configs /backup/
 #   /backup/logs/...
 #   /backup/configs/...
 
-ncp copy oss://my-bucket/ /backup/
+ncp copy oss://prod@my-bucket/ /backup/
 # Result: /backup/my-bucket/...
 ```
 
@@ -63,24 +63,49 @@ Only **local paths** can be used as multi-source — mixing `oss://` or `ncp://`
 ncp copy /data/logs /data/configs /backup/
 
 # ERROR: mixing local and OSS sources
-ncp copy /data/logs oss://bucket/prefix/ /backup/
+ncp copy /data/logs oss://prod@bucket/prefix/ /backup/
 
 # ERROR: multiple OSS sources
-ncp copy oss://bucket-a/data/ oss://bucket-b/data/ /backup/
+ncp copy oss://prod@bucket-a/data/ oss://prod@bucket-b/data/ /backup/
 ```
 
-### OSS Configuration
+### Profiles (cloud credentials)
 
-When using `oss://` paths (as source or destination), you must provide Alibaba Cloud OSS credentials via CLI flags or config file:
+Cloud URLs reference a named profile via userinfo: `oss://<profile>@bucket/path/`. Profiles are defined in `ncp_config.json` under the `Profiles` key. The same name can map to different accounts or regions, which is how cross-account migration is expressed:
 
-| Flag | Required | Description |
-|------|----------|-------------|
-| `--endpoint` | Yes | OSS endpoint, e.g. `oss-cn-shenzhen.aliyuncs.com` |
-| `--region` | Yes | OSS region, e.g. `cn-shenzhen` |
-| `--access-key-id` | Yes | Alibaba Cloud AccessKey ID |
-| `--access-key-secret` | Yes | Alibaba Cloud AccessKey Secret |
+```bash
+# Cross-account OSS copy: each side picks its own profile.
+ncp copy oss://acct-a@bkt-a/data/ oss://acct-b@bkt-b/data/
+```
 
-The same set of OSS parameters applies to the entire command — if both source and destination are `oss://`, they must share the same endpoint/region/credentials (i.e., be in the same OSS region).
+`ncp_config.json` uses the layered search path (`/etc/ncp_config.json` → `~/ncp_config.json` → `./ncp_config.json`); later layers fully replace any profile they redefine (no field-level merging, so credentials never end up half new and half old).
+
+```json
+{
+  "Profiles": {
+    "prod": {
+      "Provider": "oss",
+      "Endpoint": "oss-cn-shenzhen.aliyuncs.com",
+      "Region":   "cn-shenzhen",
+      "AK":       "${env:NCP_PROD_AK}",
+      "SK":       "${env:NCP_PROD_SK}"
+    },
+    "dr": {
+      "Provider": "oss",
+      "Endpoint": "oss-cn-beijing.aliyuncs.com",
+      "Region":   "cn-beijing",
+      "AK":       "${env:NCP_DR_AK}",
+      "SK":       "${env:NCP_DR_SK}"
+    }
+  }
+}
+```
+
+**Rules:**
+- The profile referenced in a URL MUST exist in the loaded config; otherwise ncp fails fast at startup.
+- `Provider` MUST equal the URL scheme (`oss://prod@...` requires `Profiles.prod.Provider == "oss"`).
+- `${env:VAR}` placeholders in `AK`/`SK`/`Endpoint`/`Region` are resolved at load time. Plain credentials are accepted but force the config file to be `0600`; otherwise ncp refuses to start.
+- There is no fallback: cloud URLs without a profile, or with embedded passwords, are rejected.
 
 **Constraints:**
 - `--cksum-algorithm` must be `md5` when OSS is involved (OSS uses Content-MD5 for integrity verification; `xxh64` is not supported).
@@ -90,32 +115,19 @@ Example:
 
 ```bash
 # Local → OSS
-ncp copy /data/project oss://my-bucket/backup/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy /data/project oss://prod@my-bucket/backup/
 
 # OSS → Local
-ncp copy oss://my-bucket/backup/ /data/restore/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy oss://prod@my-bucket/backup/ /data/restore/
 
-# OSS → OSS (same region)
-ncp copy oss://src-bucket/data/ oss://dst-bucket/backup/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+# OSS → OSS (same account)
+ncp copy oss://prod@src-bucket/data/ oss://prod@dst-bucket/backup/
+
+# OSS → OSS (cross-account)
+ncp copy oss://acct-a@src-bucket/data/ oss://acct-b@dst-bucket/backup/
 
 # Verify OSS data
-ncp cksum /data/project oss://my-bucket/backup/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp cksum /data/project oss://prod@my-bucket/backup/
 ```
 
 ## Quick Start
@@ -132,22 +144,14 @@ ncp serve --base /backup --listen :9900 &  # on the destination server
 ncp copy /data/project ncp://server:9900/backup/
 
 # Copy to Alibaba Cloud OSS — creates backup/project/... under the bucket
-ncp copy /data/project oss://my-bucket/backup/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy /data/project oss://prod@my-bucket/backup/
 
 # Copy entire OSS bucket — creates /restore/my-bucket/...
-ncp copy oss://my-bucket/ /restore/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy oss://prod@my-bucket/ /restore/
 
 # Verify data consistency (both paths are explicit bases)
 ncp cksum /data/project /backup/project
-ncp cksum /data/project oss://my-bucket/backup/project --endpoint ... --region ...
+ncp cksum /data/project oss://prod@my-bucket/backup/project
 
 # Resume an interrupted task
 ncp resume task-20260502-143000-abcd
@@ -179,10 +183,6 @@ Copy files from one or more sources to a destination. Supports local, `ncp://`, 
 | `--ProgramLogLevel` | info | Log level: trace/debug/info/warn/error/critical |
 | `--dry-run` | false | Print effective config and exit |
 | `--task` | | Resume existing task by taskID |
-| `--endpoint` | | OSS endpoint |
-| `--region` | | OSS region |
-| `--access-key-id` | | OSS AccessKey ID |
-| `--access-key-secret` | | OSS AccessKey Secret |
 
 ### `ncp cksum <src> <dst>`
 
@@ -209,7 +209,26 @@ Start an ncp protocol server to receive file pushes.
 
 ### `ncp task`
 
-Manage tasks: `list`, `show <taskID>`, `delete <taskID>`.
+Manage tasks: `list`, `show <taskID>`, `delete <taskID>`, `migrate-profile <taskID>`.
+
+`migrate-profile` rewrites the `srcBase`/`dstBase` URLs in a task's `meta.json` to add a `<profile>@` prefix. Use it once after upgrading from a pre-profile build of ncp; afterwards `ncp resume <taskID>` works again. Local paths and `ncp://` URLs are left unchanged.
+
+```bash
+# Apply the same profile to both src and dst
+ncp task migrate-profile <taskID> --profile prod
+
+# Different profiles per side (cross-account migration)
+ncp task migrate-profile <taskID> --src-profile acct-a --dst-profile acct-b
+```
+
+### `ncp profile`
+
+Inspect profiles defined in `ncp_config.json`.
+
+```bash
+ncp profile list           # name<TAB>provider<TAB>region per profile
+ncp profile show <name>    # full profile JSON with AK/SK masked
+```
 
 ## Architecture
 

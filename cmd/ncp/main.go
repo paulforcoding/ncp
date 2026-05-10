@@ -44,7 +44,7 @@ func main() {
 	copyCmd := &cobra.Command{
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
-		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .",
+		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
 		Args:  cobra.MinimumNArgs(2),
 		RunE:  runCopy,
 	}
@@ -67,10 +67,6 @@ func main() {
 	copyCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 	copyCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	copyCmd.Flags().String("task", "", "Resume an existing task by taskID")
-	copyCmd.Flags().String("endpoint", "", "OSS endpoint (e.g. oss-cn-shenzhen.aliyuncs.com)")
-	copyCmd.Flags().String("region", "", "OSS region (e.g. cn-shenzhen)")
-	copyCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
-	copyCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
 	copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	copyCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	copyCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
@@ -88,10 +84,6 @@ func main() {
 	_ = v.BindPFlag("IOSize", copyCmd.Flags().Lookup("IOSize"))
 	_ = v.BindPFlag("EnsureDirMtime", copyCmd.Flags().Lookup("enable-EnsureDirMtime"))
 	_ = v.BindPFlag("ProgressStorePath", copyCmd.Flags().Lookup("ProgressStorePath"))
-	_ = v.BindPFlag("OSSEndpoint", copyCmd.Flags().Lookup("endpoint"))
-	_ = v.BindPFlag("OSSRegion", copyCmd.Flags().Lookup("region"))
-	_ = v.BindPFlag("OSSAK", copyCmd.Flags().Lookup("access-key-id"))
-	_ = v.BindPFlag("OSSSK", copyCmd.Flags().Lookup("access-key-secret"))
 	_ = v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
 	_ = v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
 	_ = v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
@@ -149,7 +141,7 @@ func main() {
 	}
 	taskDeleteCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 
-	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
+	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd, newTaskMigrateCmd())
 
 	// serve command
 	serveCmd := &cobra.Command{
@@ -165,7 +157,7 @@ func main() {
 	cksumCmd := &cobra.Command{
 		Use:   "cksum <src> <dst>",
 		Short: "Verify data consistency between source and destination",
-		Long:  "Verify source and destination data consistency by comparing checksums. Both paths are explicit base directories; no automatic basename joining is performed. Supports any combination of local, OSS, and ncp:// (remote) endpoints.",
+		Long:  "Verify source and destination data consistency by comparing checksums. Both paths are explicit base directories; no automatic basename joining is performed. Supports any combination of local, OSS, and ncp:// (remote) endpoints.\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runCksum,
 	}
@@ -178,15 +170,11 @@ func main() {
 	cksumCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
 	cksumCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
-	cksumCmd.Flags().String("endpoint", "", "OSS endpoint")
-	cksumCmd.Flags().String("region", "", "OSS region")
-	cksumCmd.Flags().String("access-key-id", "", "OSS AccessKey ID")
-	cksumCmd.Flags().String("access-key-secret", "", "OSS AccessKey Secret")
 	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd)
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newProfileCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -207,9 +195,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Warn about permissive config files if OSS credentials are in use
-	if cfg.OSSAK != "" || cfg.OSSSK != "" {
-		config.CheckCredentialFilePermissions()
+	// Reject if config files contain plain credentials with overly permissive modes.
+	if err := config.CheckCredentialFilePermissions(cfg.Profiles); err != nil {
+		return err
 	}
 
 	// --dry-run: print effective config as JSON and exit
@@ -478,10 +466,6 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	_ = v.BindPFlag("FileLogOutput", cmd.Flags().Lookup("FileLogOutput"))
 	_ = v.BindPFlag("FileLogInterval", cmd.Flags().Lookup("FileLogInterval"))
 	_ = v.BindPFlag("ProgressStorePath", cmd.Flags().Lookup("ProgressStorePath"))
-	_ = v.BindPFlag("OSSEndpoint", cmd.Flags().Lookup("endpoint"))
-	_ = v.BindPFlag("OSSRegion", cmd.Flags().Lookup("region"))
-	_ = v.BindPFlag("OSSAK", cmd.Flags().Lookup("access-key-id"))
-	_ = v.BindPFlag("OSSSK", cmd.Flags().Lookup("access-key-secret"))
 	_ = v.BindPFlag("CksumAlgorithm", cmd.Flags().Lookup("cksum-algorithm"))
 	_ = v.BindPFlag("SkipByMtime", cmd.Flags().Lookup("skip-by-mtime"))
 
@@ -620,19 +604,12 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 // setupCksumDeps creates src Source, dst Source, and opens the Pebble store.
 // Both src and dst are Sources (readable) for checksum comparison.
 func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, error) {
-	ossCfg := di.OSSConfig{
-		Endpoint: cfg.OSSEndpoint,
-		Region:   cfg.OSSRegion,
-		AK:       cfg.OSSAK,
-		SK:       cfg.OSSSK,
-	}
-
-	src, err := di.NewSourceWithOSS(srcPath, ossCfg)
+	src, err := di.NewSource(srcPath, cfg.Profiles)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
 
-	dst, err := di.NewSourceWithOSS(dstPath, ossCfg)
+	dst, err := di.NewSource(dstPath, cfg.Profiles)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
 	}
@@ -755,13 +732,6 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 // All sources are wrapped in BasenamePrefixedSource so that every source
 // (single or multiple) gets its basename as a subdirectory under dst.
 func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
-	ossCfg := di.OSSConfig{
-		Endpoint: cfg.OSSEndpoint,
-		Region:   cfg.OSSRegion,
-		AK:       cfg.OSSAK,
-		SK:       cfg.OSSSK,
-	}
-
 	var src storage.Source
 	var err error
 
@@ -777,7 +747,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 	sources := make([]storage.Source, len(srcPaths))
 	basenames := make([]string, len(srcPaths))
 	for i, sp := range srcPaths {
-		sources[i], err = di.NewSourceWithOSS(sp, ossCfg)
+		sources[i], err = di.NewSource(sp, cfg.Profiles)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
 		}
@@ -800,8 +770,13 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
 	case "oss":
+		// Eagerly validate the dst URL/profile so misconfiguration surfaces at
+		// setup rather than when a worker first invokes the factory.
+		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
+		}
 		dstFactory := func(id int) (storage.Destination, error) {
-			return di.NewDestinationWithConfig(dstPath, di.DestConfig{}, ossCfg)
+			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
@@ -812,7 +787,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 			IOSize:      cfg.IOSize,
 			IOSizeTiers: cfg.IOSizeTiers,
 		}
-		dst, err = di.NewDestinationWithConfig(dstPath, dstCfg)
+		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
 		}

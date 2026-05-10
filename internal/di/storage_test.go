@@ -58,7 +58,7 @@ func TestParsePath_OSS(t *testing.T) {
 }
 
 func TestNewSource_LocalScheme(t *testing.T) {
-	src, err := NewSource("/tmp")
+	src, err := NewSource("/tmp", nil)
 	if err != nil {
 		t.Fatalf("new source: %v", err)
 	}
@@ -69,14 +69,14 @@ func TestNewSource_LocalScheme(t *testing.T) {
 }
 
 func TestNewSource_UnsupportedScheme(t *testing.T) {
-	_, err := NewSourceWithOSS("s3://bucket/path", OSSConfig{})
+	_, err := NewSource("s3://bucket/path", nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme")
 	}
 }
 
 func TestNewDestination_LocalScheme(t *testing.T) {
-	dst, err := NewDestination("/tmp")
+	dst, err := NewDestination("/tmp", DestConfig{}, nil)
 	if err != nil {
 		t.Fatalf("new destination: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestNewDestination_LocalScheme(t *testing.T) {
 }
 
 func TestNewDestination_UnsupportedScheme(t *testing.T) {
-	_, err := NewDestinationWithConfig("s3://bucket/path", DestConfig{})
+	_, err := NewDestination("s3://bucket/path", DestConfig{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme")
 	}

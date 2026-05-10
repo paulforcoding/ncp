@@ -39,22 +39,14 @@ ncp serve --base /backup --listen :9900 &  # 在目标服务器上启动
 ncp copy /data/project ncp://server:9900/backup/
 
 # 复制到阿里云 OSS — 在 bucket 下创建 backup/project/...
-ncp copy /data/project oss://my-bucket/backup/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy /data/project oss://prod@my-bucket/backup/
 
 # 复制整桶 OSS — 结果在 /restore/my-bucket/...
-ncp copy oss://my-bucket/ /restore/ \
-  --endpoint oss-cn-shenzhen.aliyuncs.com \
-  --region cn-shenzhen \
-  --access-key-id YOUR_AK \
-  --access-key-secret YOUR_SK
+ncp copy oss://prod@my-bucket/ /restore/
 
 # 校验数据一致性（两端都是显式基址）
 ncp cksum /data/project /backup/project
-ncp cksum /data/project oss://my-bucket/backup/project --endpoint ... --region ...
+ncp cksum /data/project oss://prod@my-bucket/backup/project
 
 # 恢复中断的任务
 ncp resume task-20260502-143000-abcd
@@ -75,7 +67,7 @@ ncp copy --task task-20260502-143000-abcd
 ncp copy /data/project /backup/
 # 结果：/backup/project/...
 
-ncp copy oss://my-bucket/ /restore/
+ncp copy oss://prod@my-bucket/ /restore/
 # 结果：/restore/my-bucket/...
 ```
 
@@ -94,10 +86,6 @@ ncp copy oss://my-bucket/ /restore/
 | `--ProgramLogLevel` | info | 日志级别：trace/debug/info/warn/error/critical |
 | `--dry-run` | false | 打印有效配置后退出 |
 | `--task` | | 按 taskID 恢复已有任务 |
-| `--endpoint` | | OSS endpoint |
-| `--region` | | OSS 区域 |
-| `--access-key-id` | | OSS AccessKey ID |
-| `--access-key-secret` | | OSS AccessKey Secret |
 
 ### `ncp cksum <src> <dst>`
 
@@ -124,7 +112,87 @@ ncp copy oss://my-bucket/ /restore/
 
 ### `ncp task`
 
-管理任务：`list`、`show <taskID>`、`delete <taskID>`。
+管理任务：`list`、`show <taskID>`、`delete <taskID>`、`migrate-profile <taskID>`。
+
+`migrate-profile` 把任务 `meta.json` 中的 `srcBase`/`dstBase` URL 注入 `<profile>@` 前缀。在升级到 profile 版本后,对存量任务执行一次,之后 `ncp resume <taskID>` 即可继续工作。本地路径与 `ncp://` URL 不会被改写。
+
+```bash
+# 同一 profile 同时应用到 src/dst
+ncp task migrate-profile <taskID> --profile prod
+
+# 跨账号:src 与 dst 使用不同 profile
+ncp task migrate-profile <taskID> --src-profile acct-a --dst-profile acct-b
+```
+
+### `ncp profile`
+
+查看 `ncp_config.json` 中定义的 profile。
+
+```bash
+ncp profile list           # 每行一个:name<TAB>provider<TAB>region
+ncp profile show <name>    # 输出脱敏后的 profile JSON(AK/SK 仅显示首尾各 4 位)
+```
+
+## Profiles(云端凭据)
+
+云 URL 通过 userinfo 引用名为 profile 的凭据集:`oss://<profile>@bucket/path/`。Profile 集中定义在 `ncp_config.json` 的 `Profiles` 字段下。同一 profile 名可以指向不同账号或区域,这正是跨账号迁移的表达方式:
+
+```bash
+# 跨账号 OSS:两端各自选择 profile
+ncp copy oss://acct-a@bkt-a/data/ oss://acct-b@bkt-b/data/
+```
+
+`ncp_config.json` 走分层加载链(`/etc/ncp_config.json` → `~/ncp_config.json` → `./ncp_config.json`),后层会**整个替换**前层中同名 profile(不做字段级合并,凭据不会半新半旧)。
+
+```json
+{
+  "Profiles": {
+    "prod": {
+      "Provider": "oss",
+      "Endpoint": "oss-cn-shenzhen.aliyuncs.com",
+      "Region":   "cn-shenzhen",
+      "AK":       "${env:NCP_PROD_AK}",
+      "SK":       "${env:NCP_PROD_SK}"
+    },
+    "dr": {
+      "Provider": "oss",
+      "Endpoint": "oss-cn-beijing.aliyuncs.com",
+      "Region":   "cn-beijing",
+      "AK":       "${env:NCP_DR_AK}",
+      "SK":       "${env:NCP_DR_SK}"
+    }
+  }
+}
+```
+
+**规则:**
+- URL 中引用的 profile 必须存在于已加载的配置中,否则启动期立即报错。
+- `Provider` 必须等于 URL scheme(`oss://prod@...` 要求 `Profiles.prod.Provider == "oss"`)。
+- `AK`/`SK`/`Endpoint`/`Region` 中的 `${env:VAR}` 占位符在加载期解析。允许写入明文凭据,但此时配置文件必须为 `0600`,否则 ncp 拒绝启动。
+- **没有任何回退路径**:云 URL 缺 profile,或在 URL 中嵌入密码,直接拒绝。
+
+**约束:**
+- OSS 参与时,`--cksum-algorithm` 必须为 `md5`(OSS 用 Content-MD5 校验完整性,不支持 `xxh64`)。
+- POSIX 元数据(mode、uid、gid、mtime、symlink target、xattr)以 `ncp-` 前缀的对象自定义元数据保存(如 `ncp-mode`、`ncp-uid`)。
+
+示例:
+
+```bash
+# 本地 → OSS
+ncp copy /data/project oss://prod@my-bucket/backup/
+
+# OSS → 本地
+ncp copy oss://prod@my-bucket/backup/ /data/restore/
+
+# OSS → OSS(同账号)
+ncp copy oss://prod@src-bucket/data/ oss://prod@dst-bucket/backup/
+
+# OSS → OSS(跨账号)
+ncp copy oss://acct-a@src-bucket/data/ oss://acct-b@dst-bucket/backup/
+
+# 校验 OSS 数据
+ncp cksum /data/project oss://prod@my-bucket/backup/
+```
 
 ## 架构
 

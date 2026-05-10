@@ -27,11 +27,9 @@ type Config struct {
 	SkipByMtime       bool               `json:"SkipByMtime" mapstructure:"SkipByMtime"`
 	ChannelBuf        int                `json:"ChannelBuf" mapstructure:"ChannelBuf"`
 
-	// OSS configuration
-	OSSEndpoint string `json:"OSSEndpoint,omitempty" mapstructure:"OSSEndpoint"`
-	OSSRegion   string `json:"OSSRegion,omitempty" mapstructure:"OSSRegion"`
-	OSSAK       string `json:"-" mapstructure:"OSSAK"`
-	OSSSK       string `json:"-" mapstructure:"OSSSK"`
+	// Profiles holds named credential sets keyed by profile name.
+	// Each profile is referenced from a URL via userinfo: oss://<profile>@bucket/path.
+	Profiles map[string]model.Profile `json:"Profiles,omitempty" mapstructure:"Profiles"`
 
 	DryRun bool   `json:"-" mapstructure:"-"`
 	TaskID string `json:"-" mapstructure:"-"`
@@ -65,6 +63,14 @@ func (c *Config) Validate() error {
 	}
 	if c.CopyParallelism < 1 {
 		return fmt.Errorf("CopyParallelism must be >= 1, got %d", c.CopyParallelism)
+	}
+	for name, p := range c.Profiles {
+		if p.Provider == "" {
+			return fmt.Errorf("profile %q: Provider is required", name)
+		}
+		if !model.IsCloudScheme(p.Provider) {
+			return fmt.Errorf("profile %q: provider %q is not a recognized cloud scheme", name, p.Provider)
+		}
 	}
 	return nil
 }

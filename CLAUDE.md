@@ -312,6 +312,32 @@ make lint           # golangci-lint
 5. 环境变量（`NCP_` 前缀）
 6. CLI flags
 
+#### Profiles(云端凭据)
+
+`ncp_config.json` 顶层 `Profiles` 字段定义云端凭据集,URL 通过 userinfo 引用:`oss://<profile>@bucket/path/`。
+
+```json
+{
+  "Profiles": {
+    "prod": {
+      "Provider": "oss",
+      "Endpoint": "oss-cn-shenzhen.aliyuncs.com",
+      "Region":   "cn-shenzhen",
+      "AK":       "${env:NCP_PROD_AK}",
+      "SK":       "${env:NCP_PROD_SK}"
+    }
+  }
+}
+```
+
+关键约束:
+- 字段名 `AK`/`SK` 在配置面统一,各 backend 内部映射到 SDK 真实字段名(如 COS 的 SecretId/SecretKey)。
+- `Provider` 必须等于 URL scheme(`oss://prod@...` 要求 `Profiles.prod.Provider == "oss"`),启动期立即校验。
+- `${env:VAR}` 占位符在加载期解析,允许将明文密钥放在环境变量。
+- 分层 config 间 profile 是**整体替换**(不字段级 merge),避免凭据半新半旧。
+- 包含明文 `AK`/`SK`(非 `${env:...}` 引用)的 config 文件必须为 `0600`,否则 `config.CheckCredentialFilePermissions` 拒绝启动。
+- 云 URL 缺 profile / 嵌入密码 / profile 在配置中找不到 → fail-fast,无任何回退路径。
+
 ### 6.6 代码规范
 
 - **Go 版本**：1.23+
@@ -343,7 +369,7 @@ make lint           # golangci-lint
 
 ## 8. 常见陷阱
 
-1. **OSS 仅支持 md5**：使用 `oss://` 时 `--cksum-algorithm` 必须为 `md5`。
+1. **OSS 必须用 profile 引用**:`oss://<profile>@bucket/path/`。profile 集中定义在 `ncp_config.json` 的 `Profiles` 下,`Profiles.<name>.Provider` 必须等于 URL scheme。`--cksum-algorithm` 必须为 `md5`(OSS 用 Content-MD5 校验,不支持 `xxh64`)。
 2. **ncp:// 仅作目标**：`ncp://` 只能作为 copy 的 destination，不能作为 source。
 3. **多源限制**：多个本地源可以同时复制，但不能混用 `oss://` 或 `ncp://` 作为多源之一。
 4. **copy vs cksum 路径语义不同**：`ncp copy /data/dir /tmp/` 产生 `/tmp/dir/...`（自动加 basename），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
