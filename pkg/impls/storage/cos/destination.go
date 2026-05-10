@@ -310,7 +310,7 @@ func (w *smallFileWriter) Close(ctx context.Context, checksum []byte) error {
 	resp, err := withRetryResult(ctx, w.retryCfg, func() (*cos.Response, error) {
 		return w.client.Object.Put(ctx, w.key, bytes.NewReader(w.buf.Bytes()), &cos.ObjectPutOptions{
 			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
-				ContentMD5: base64.StdEncoding.EncodeToString(contentMD5),
+				ContentMD5:  base64.StdEncoding.EncodeToString(contentMD5),
 				XCosMetaXXX: buildMetaHeader(w.meta),
 			},
 		})

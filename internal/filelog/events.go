@@ -2,7 +2,7 @@ package filelog
 
 // FileLog event types.
 const (
-	EventFileComplete        = "file_complete"
+	EventFileComplete         = "file_complete"
 	EventFileMetadataComplete = "file_metadata_complete"
-	EventProgressSummary     = "progress_summary"
+	EventProgressSummary      = "progress_summary"
 )
