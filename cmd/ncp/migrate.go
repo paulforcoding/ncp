@@ -44,7 +44,7 @@ func runTaskMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot migrate: %w", err)
 	}
 	if lock != nil {
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 
 	srcURLs := strings.Split(meta.SrcBase, ",")
