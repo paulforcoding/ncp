@@ -267,25 +267,23 @@ Start an ncp protocol server to receive file pushes.
 
 ### `ncp task`
 
-Manage tasks: `list`, `show <taskID>`, `delete <taskID>`, `migrate-profile <taskID>`.
+Manage tasks: `list`, `show <taskID>`, `delete <taskID>`.
 
-`migrate-profile` rewrites the `srcBase`/`dstBase` URLs in a task's `meta.json` to add a `<profile>@` prefix. Use it once after upgrading from a pre-profile build of ncp; afterwards `ncp resume <taskID>` works again. Local paths and `ncp://` URLs are left unchanged.
+### `ncp config`
+
+Inspect the merged effective configuration. AK/SK are automatically masked.
 
 ```bash
-# Apply the same profile to both src and dst
-ncp task migrate-profile <taskID> --profile prod
-
-# Different profiles per side (cross-account migration)
-ncp task migrate-profile <taskID> --src-profile acct-a --dst-profile acct-b
+ncp config show                     # show all effective config values
+ncp config show --profile <name>    # show only the specified profile
 ```
 
-### `ncp profile`
-
-Inspect profiles defined in `ncp_config.json`.
+All execution commands (`copy`, `cksum`, `resume`) support `--dry-run` to preview the effective config without executing, including which profiles would be used for the given URLs.
 
 ```bash
-ncp profile list           # name<TAB>provider<TAB>region per profile
-ncp profile show <name>    # full profile JSON with AK/SK masked
+ncp copy  /data/dir  oss://prod@bucket/backup  --dry-run
+ncp cksum /data/dir  oss://prod@bucket/backup  --dry-run
+ncp resume task-xxx --dry-run
 ```
 
 ## Architecture

@@ -126,25 +126,23 @@ ncp copy oss://prod@my-bucket/ /restore/
 
 ### `ncp task`
 
-管理任务：`list`、`show <taskID>`、`delete <taskID>`、`migrate-profile <taskID>`。
+管理任务：`list`、`show <taskID>`、`delete <taskID>`。
 
-`migrate-profile` 把任务 `meta.json` 中的 `srcBase`/`dstBase` URL 注入 `<profile>@` 前缀。在升级到 profile 版本后,对存量任务执行一次,之后 `ncp resume <taskID>` 即可继续工作。本地路径与 `ncp://` URL 不会被改写。
+### `ncp config`
+
+查看合并后的生效配置。AK/SK 自动脱敏。
 
 ```bash
-# 同一 profile 同时应用到 src/dst
-ncp task migrate-profile <taskID> --profile prod
-
-# 跨账号:src 与 dst 使用不同 profile
-ncp task migrate-profile <taskID> --src-profile acct-a --dst-profile acct-b
+ncp config show                     # 展示全部生效配置
+ncp config show --profile <name>    # 只展示指定 profile
 ```
 
-### `ncp profile`
-
-查看 `ncp_config.json` 中定义的 profile。
+所有执行命令（`copy`、`cksum`、`resume`）都支持 `--dry-run`，可在不执行的情况下预览生效配置，并标注给定 URL 会使用哪些 profile。
 
 ```bash
-ncp profile list           # 每行一个:name<TAB>provider<TAB>region
-ncp profile show <name>    # 输出脱敏后的 profile JSON(AK/SK 仅显示首尾各 4 位)
+ncp copy  /data/dir  oss://prod@bucket/backup  --dry-run
+ncp cksum /data/dir  oss://prod@bucket/backup  --dry-run
+ncp resume task-xxx --dry-run
 ```
 
 ## Profiles(云端凭据)

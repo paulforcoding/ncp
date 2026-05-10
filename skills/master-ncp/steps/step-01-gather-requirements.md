@@ -35,15 +35,15 @@
 
 不要再询问 endpoint/region/AK/SK,这些已经从配置中读取。改为按以下流程确认 profile:
 
-1. 询问用户预期使用哪个 profile 名(例如 "prod"、"dr"、"acct-a"、"cos-prod"、"obs-prod")。如果用户不确定,先运行 `ncp profile list` 列出当前生效 profile,再让用户挑选。
-2. 用 `ncp profile show <name>` 验证该 profile 已存在且字段齐全(Provider/Region/AK/SK 都有值,Endpoint 对 OSS/OBS 必填、对 COS 可选,AK/SK 会脱敏显示首尾各 4 位)。
-3. 如果 `ncp profile show` 报 "not found":
+1. 询问用户预期使用哪个 profile 名(例如 "prod"、"dr"、"acct-a"、"cos-prod"、"obs-prod")。如果用户不确定,先运行 `ncp config show` 查看当前生效的 profile 列表,再让用户挑选。
+2. 用 `ncp config show --profile <name>` 验证该 profile 已存在且字段齐全(Provider/Region/AK/SK 都有值,Endpoint 对 OSS/OBS 必填、对 COS 可选,AK/SK 会脱敏显示首尾各 4 位)。
+3. 如果 `ncp config show --profile <name>` 报 "not found":
    - 解释 profile 必须先在 `ncp_config.json` 的 `Profiles` 下定义,字段名为 `Provider`/`Endpoint`/`Region`/`AK`/`SK`。`oss://` 要求 `Provider == "oss"`; `cos://` 要求 `Provider == "cos"`; `obs://` 要求 `Provider == "obs"`。
    - 引导用户写入合适的 config(`/etc/ncp_config.json`、`~/ncp_config.json`、`./ncp_config.json` 任选一层),或在最高优先级层临时写入。
    - 推荐用 `${env:VAR}` 占位符引用环境变量,避免明文密钥落盘;若必须明文,提醒文件 mode 必须为 `0600`,否则 ncp 拒绝启动。
    - COS 的 `Endpoint` 可选,如果不填会从 `Region+Bucket` 自动构造为 `https://<bucket>.cos.<region>.myqcloud.com`。
    - OBS 的 `Endpoint` 在 profile 校验阶段为必填,但运行期若缺省 SDK 会回退到 `https://obs.<region>.myhuaweicloud.com`。
-   - 用户写完后,再次执行 `ncp profile show <name>` 验证。
+   - 用户写完后,再次执行 `ncp config show --profile <name>` 验证。
 4. 跨账号场景下分别确认 src/dst 各自要用哪个 profile,URL 形如 `oss://acct-a@src/...`、`oss://acct-b@dst/...`,`cos://acct-a@src/...`、`cos://acct-b@dst/...` 或 `obs://acct-a@src/...`、`obs://acct-b@dst/...`。
 
 **一次性询问 profile 名,不要逐字段追问 endpoint/region/AK/SK。这些信息从配置文件读,不再走 CLI。**

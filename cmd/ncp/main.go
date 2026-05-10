@@ -104,6 +104,7 @@ func main() {
 	resumeCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	resumeCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
 	resumeCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 
@@ -141,7 +142,7 @@ func main() {
 	}
 	taskDeleteCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 
-	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd, newTaskMigrateCmd())
+	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
 
 	// serve command
 	serveCmd := &cobra.Command{
@@ -172,9 +173,10 @@ func main() {
 	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
+	cksumCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newProfileCmd())
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -200,11 +202,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --dry-run: print effective config as JSON and exit
+	// --dry-run: print effective config and exit
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		out, _ := json.MarshalIndent(cfg, "", "  ")
-		fmt.Println(string(out))
-		return nil
+		return handleDryRun(cmd, cfg, args)
 	}
 
 	// --task flag: resume existing task
@@ -349,11 +349,59 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	return nil
 }
 
+// handleDryRun prints the effective configuration for copy/cksum/resume --dry-run.
+// For copy, it handles both --task resume and fresh copy paths.
+func handleDryRun(cmd *cobra.Command, cfg *config.Config, args []string) error {
+	taskID, _ := cmd.Flags().GetString("task")
+	var urls []string
+	if taskID != "" {
+		meta, err := task.ReadMeta(cfg.ProgressStorePath, taskID)
+		if err != nil {
+			return fmt.Errorf("read task meta: %w", err)
+		}
+		urls = strings.Split(meta.SrcBase, ",")
+		urls = append(urls, meta.DstBase)
+	} else {
+		if len(args) < 2 {
+			return fmt.Errorf("dry-run requires <src> and <dst> arguments when not using --task")
+		}
+		urls = append([]string(nil), args[:len(args)-1]...)
+		urls = append(urls, args[len(args)-1])
+	}
+	usedProfiles, err := config.ExtractUsedProfiles(urls, cfg.Profiles)
+	if err != nil {
+		return err
+	}
+	fmt.Print(config.FormatConfig(cfg, usedProfiles))
+	return nil
+}
+
 // runResume handles `ncp resume <taskID>` — determines jobType from last run.
 func runResume(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 	taskID := args[0]
 	progressDir, _ := cmd.Flags().GetString("ProgressStorePath")
+
+	cfg, err := loadResumeConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// --dry-run: print effective config and exit
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		meta, err := task.ReadMeta(progressDir, taskID)
+		if err != nil {
+			return fmt.Errorf("read task meta: %w", err)
+		}
+		urls := strings.Split(meta.SrcBase, ",")
+		urls = append(urls, meta.DstBase)
+		usedProfiles, err := config.ExtractUsedProfiles(urls, cfg.Profiles)
+		if err != nil {
+			return err
+		}
+		fmt.Print(config.FormatConfig(cfg, usedProfiles))
+		return nil
+	}
 
 	// Check concurrency
 	meta, lock, err := task.CheckTaskNotRunning(progressDir, taskID)
@@ -365,11 +413,6 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	jobType := task.LastJobType(meta)
-
-	cfg, err := loadResumeConfig(cmd)
-	if err != nil {
-		return err
-	}
 
 	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
 		return fmt.Errorf("setup program log: %w", err)
@@ -472,6 +515,19 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
 		return err
+	}
+
+	// --dry-run: print effective config and exit
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		if len(args) < 2 {
+			return fmt.Errorf("cksum --dry-run requires <src> and <dst> arguments")
+		}
+		usedProfiles, err := config.ExtractUsedProfiles(args[:2], cfg.Profiles)
+		if err != nil {
+			return err
+		}
+		fmt.Print(config.FormatConfig(cfg, usedProfiles))
+		return nil
 	}
 
 	// --task flag: resume existing cksum task
