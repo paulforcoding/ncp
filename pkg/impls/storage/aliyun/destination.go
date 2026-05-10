@@ -33,8 +33,6 @@ const (
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
 	metaXattrPrefix   = metaPrefix + "xattr-"
-
-	smallFileThreshold = 5 << 20 // 5MB — below this, use PutObject
 )
 
 // Destination implements storage.Destination for Alibaba Cloud OSS.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
@@ -18,26 +19,36 @@ type Source struct {
 	addr     string // server address (host:port)
 	basePath string // URL path (e.g. "/data/backup")
 	conn     *protocol.Conn
+	mu       sync.Mutex
 }
 
 var _ storage.Source = (*Source)(nil)
 
 // NewSource creates a remote Source for the given ncp server.
-// The connection is not established until Open is called.
+// The connection is not established until Connect is called.
 func NewSource(addr, basePath string) (*Source, error) {
 	return &Source{addr: addr, basePath: basePath}, nil
 }
 
-// Connect establishes a TCP connection and sends MsgInit.
-func (s *Source) Connect(ctx context.Context) error {
+// dialAndInit establishes a fresh TCP connection and sends MsgInit.
+func (s *Source) dialAndInit() (*protocol.Conn, error) {
 	conn, err := protocol.Dial(s.addr)
 	if err != nil {
-		return fmt.Errorf("remote source dial %s: %w", s.addr, err)
+		return nil, fmt.Errorf("remote source dial %s: %w", s.addr, err)
 	}
 	initMsg := &protocol.InitMsg{BasePath: s.basePath}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
-		return fmt.Errorf("remote source init %s: %w", s.addr, err)
+		return nil, fmt.Errorf("remote source init %s: %w", s.addr, err)
+	}
+	return conn, nil
+}
+
+// Connect establishes a TCP connection and sends MsgInit.
+func (s *Source) Connect(ctx context.Context) error {
+	conn, err := s.dialAndInit()
+	if err != nil {
+		return err
 	}
 	s.conn = conn
 	return nil
@@ -51,7 +62,7 @@ func (s *Source) Close(ctx context.Context) error {
 	return nil
 }
 
-// BeginTask is a no-op for remote sources (initialization happens in Open).
+// BeginTask is a no-op for remote sources (initialization happens in Connect).
 func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
 
 // EndTask is a no-op for remote sources.
@@ -66,8 +77,17 @@ func (s *Source) ensureConnected(ctx context.Context) error {
 
 // Walk sends MsgList requests with pagination and calls fn for each entry.
 func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
+	lazyConnect := s.conn == nil
 	if err := s.ensureConnected(ctx); err != nil {
 		return err
+	}
+	if lazyConnect {
+		defer func() {
+			if s.conn != nil {
+				_ = s.conn.Close()
+				s.conn = nil
+			}
+		}()
 	}
 
 	token := ""
@@ -79,7 +99,9 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 		}
 
 		listMsg := &protocol.ListMsg{ContinuationToken: token}
+		s.mu.Lock()
 		f, err := s.conn.SendAndRecv(protocol.MsgList, listMsg.Encode())
+		s.mu.Unlock()
 		if err != nil {
 			return fmt.Errorf("remote list: %w", err)
 		}
@@ -112,9 +134,10 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 	return nil
 }
 
-// Open sends MsgOpen with O_RDONLY and returns a FileReader backed by the shared connection.
+// Open sends MsgOpen with O_RDONLY and returns a FileReader backed by a dedicated connection.
 func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
-	if err := s.ensureConnected(ctx); err != nil {
+	conn, err := s.dialAndInit()
+	if err != nil {
 		return nil, err
 	}
 
@@ -122,23 +145,26 @@ func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, 
 		Path:  relPath,
 		Flags: 0, // O_RDONLY
 	}
-	ack, err := s.conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
+	ack, err := conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("remote open %s: %w", relPath, err)
 	}
 	_, fd := protocol.DecodeAckFD(ack.Data)
 
-	return &Reader{conn: s.conn, fd: fd}, nil
+	return &Reader{conn: conn, fd: fd}, nil
 }
 
 // Stat sends MsgStat and returns the file metadata as a DiscoverItem.
 func (s *Source) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
-	if err := s.ensureConnected(ctx); err != nil {
+	conn, err := s.dialAndInit()
+	if err != nil {
 		return storage.DiscoverItem{}, err
 	}
+	defer conn.Close()
 
 	msg := &protocol.StatMsg{RelPath: relPath}
-	f, err := s.conn.SendAndRecv(protocol.MsgStat, msg.Encode())
+	f, err := conn.SendAndRecv(protocol.MsgStat, msg.Encode())
 	if err != nil {
 		return storage.DiscoverItem{}, fmt.Errorf("remote stat %s: %w", relPath, err)
 	}
@@ -162,7 +188,7 @@ func (s *Source) Stat(ctx context.Context, relPath string) (storage.DiscoverItem
 	return listEntryToDiscoverItem(&dataMsg.Entries[0]), nil
 }
 
-// Base returns the source base as an ncp:// URL.
+// URI returns the source base as an ncp:// URL.
 func (s *Source) URI() string {
 	return "ncp://" + s.addr + s.basePath
 }
