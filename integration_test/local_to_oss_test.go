@@ -9,15 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/impls/storage/local"
 	"github.com/zp001/ncp/pkg/model"
 )
 
-func TestIntegration_LocalToCOS_Copy(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-copy-dst")
+func TestIntegration_LocalToOSS_Copy(t *testing.T) {
+	env := requireOSS(t)
+	dstPrefix := newOSSPrefix(t, env, "local2oss-copy-dst")
 
 	srcDir := t.TempDir()
 	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755)
@@ -28,7 +29,7 @@ func TestIntegration_LocalToCOS_Copy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new local source: %v", err)
 	}
-	dst := newCOSDestination(t, env, dstPrefix)
+	dst := newOSSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := copy.NewJob(src, dst, store,
@@ -47,15 +48,15 @@ func TestIntegration_LocalToCOS_Copy(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
-	verifyCOSPrefix(t, env, dstPrefix, map[string]string{
+	verifyOSSPrefix(t, env, dstPrefix, map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	})
 }
 
-func TestIntegration_LocalToCOS_Copy_Resume(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-copy-r-dst")
+func TestIntegration_LocalToOSS_Copy_Resume(t *testing.T) {
+	env := requireOSS(t)
+	dstPrefix := newOSSPrefix(t, env, "local2oss-copy-r-dst")
 
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("alpha"), 0o644)
@@ -63,7 +64,7 @@ func TestIntegration_LocalToCOS_Copy_Resume(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "c.txt"), []byte("gamma"), 0o644)
 
 	src, _ := local.NewSource(srcDir)
-	realDst := newCOSDestination(t, env, dstPrefix)
+	realDst := newOSSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	failDst := newFailAfterNShared(realDst, 1)
@@ -94,27 +95,27 @@ func TestIntegration_LocalToCOS_Copy_Resume(t *testing.T) {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
 
-	verifyCOSPrefix(t, env, dstPrefix, map[string]string{
+	verifyOSSPrefix(t, env, dstPrefix, map[string]string{
 		"a.txt": "alpha",
 		"b.txt": "beta",
 		"c.txt": "gamma",
 	})
 }
 
-func TestIntegration_LocalToCOS_Copy_LargeFile(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-large-dst")
+func TestIntegration_LocalToOSS_Copy_LargeFile(t *testing.T) {
+	env := requireOSS(t)
+	dstPrefix := newOSSPrefix(t, env, "local2oss-large-dst")
 
 	srcDir := t.TempDir()
-	// Create a 2MB file to trigger multipart upload (COS minPartSize = 1MB)
-	largeContent := make([]byte, 2<<20)
+	// 6MB file to trigger multipart (smallFileThreshold = 5MB).
+	largeContent := make([]byte, 6<<20)
 	for i := range largeContent {
 		largeContent[i] = byte(i % 256)
 	}
 	os.WriteFile(filepath.Join(srcDir, "large.bin"), largeContent, 0o644)
 
 	src, _ := local.NewSource(srcDir)
-	dst := newCOSDestination(t, env, dstPrefix)
+	dst := newOSSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := copy.NewJob(src, dst, store,
@@ -133,22 +134,24 @@ func TestIntegration_LocalToCOS_Copy_LargeFile(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
-	// Verify via COS that the file exists with correct size
-	client := newCOSClient(env)
-	resp, err := client.Object.Head(ctx, dstPrefix+"large.bin", nil)
+	client := newOSSClient(env)
+	head, err := client.HeadObject(ctx, &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(env.Bucket),
+		Key:    oss.Ptr(dstPrefix + "large.bin"),
+	})
 	if err != nil {
 		t.Fatalf("head large.bin: %v", err)
 	}
-	if resp.Header.Get("Content-Length") != "2097152" {
-		t.Errorf("expected Content-Length=2097152, got %s", resp.Header.Get("Content-Length"))
+	if head.ContentLength != int64(len(largeContent)) {
+		t.Errorf("expected ContentLength=%d, got %d", len(largeContent), head.ContentLength)
 	}
 }
 
-// --- Local → COS cksum ---
+// --- Local → OSS cksum ---
 
-func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-cksum-dst")
+func TestIntegration_LocalToOSS_Cksum(t *testing.T) {
+	env := requireOSS(t)
+	dstPrefix := newOSSPrefix(t, env, "local2oss-cksum-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
@@ -161,13 +164,13 @@ func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
-	seedCOSPrefix(t, env, dstPrefix, files)
+	seedOSSPrefix(t, env, dstPrefix, files)
 
 	src, err := local.NewSource(srcDir)
 	if err != nil {
 		t.Fatalf("new local source: %v", err)
 	}
-	dst := newCOSSource(t, env, dstPrefix)
+	dst := newOSSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -187,7 +190,7 @@ func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
 	}
 
 	// mismatch branch
-	putCOSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+	putOSSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
 	store2 := openTestStore(t)
 	job2 := cksum.NewCksumJob(src, dst, store2,
 		cksum.WithCksumParallelism(2),
@@ -202,9 +205,9 @@ func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
 	}
 }
 
-func TestIntegration_LocalToCOS_Cksum_Resume(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-cksum-r-dst")
+func TestIntegration_LocalToOSS_Cksum_Resume(t *testing.T) {
+	env := requireOSS(t)
+	dstPrefix := newOSSPrefix(t, env, "local2oss-cksum-r-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
@@ -217,15 +220,15 @@ func TestIntegration_LocalToCOS_Cksum_Resume(t *testing.T) {
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
-	seedCOSPrefix(t, env, dstPrefix, files)
+	seedOSSPrefix(t, env, dstPrefix, files)
 	// introduce mismatch
-	putCOSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+	putOSSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
 
 	src, err := local.NewSource(srcDir)
 	if err != nil {
 		t.Fatalf("new local source: %v", err)
 	}
-	dst := newCOSSource(t, env, dstPrefix)
+	dst := newOSSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -245,7 +248,7 @@ func TestIntegration_LocalToCOS_Cksum_Resume(t *testing.T) {
 	}
 
 	// fix the mismatch
-	putCOSObject(t, env, dstPrefix, "a.txt", "alpha")
+	putOSSObject(t, env, dstPrefix, "a.txt", "alpha")
 
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),

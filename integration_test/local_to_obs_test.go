@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
+	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/impls/storage/local"
 	"github.com/zp001/ncp/pkg/model"
@@ -143,5 +144,123 @@ func TestIntegration_LocalToOBS_Copy_LargeFile(t *testing.T) {
 	}
 	if md.ContentLength != int64(len(largeContent)) {
 		t.Errorf("expected ContentLength=%d, got %d", len(largeContent), md.ContentLength)
+	}
+}
+
+// --- Local → OBS cksum ---
+
+func TestIntegration_LocalToOBS_Cksum(t *testing.T) {
+	env := requireOBS(t)
+	dstPrefix := newOBSPrefix(t, env, "local2obs-cksum-dst")
+
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
+	}
+
+	srcDir := t.TempDir()
+	for relPath, content := range files {
+		path := filepath.Join(srcDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+	seedOBSPrefix(t, env, dstPrefix, files)
+
+	src, err := local.NewSource(srcDir)
+	if err != nil {
+		t.Fatalf("new local source: %v", err)
+	}
+	dst := newOBSSource(t, env, dstPrefix)
+	store := openTestStore(t)
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	exitCode, err := job.Run(ctx)
+	if err != nil {
+		t.Fatalf("cksum job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// mismatch branch
+	putOBSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+	store2 := openTestStore(t)
+	job2 := cksum.NewCksumJob(src, dst, store2,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
+	exitCode, err = job2.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for mismatch")
+	}
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+}
+
+func TestIntegration_LocalToOBS_Cksum_Resume(t *testing.T) {
+	env := requireOBS(t)
+	dstPrefix := newOBSPrefix(t, env, "local2obs-cksum-r-dst")
+
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
+	}
+
+	srcDir := t.TempDir()
+	for relPath, content := range files {
+		path := filepath.Join(srcDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+	seedOBSPrefix(t, env, dstPrefix, files)
+	// introduce mismatch
+	putOBSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+
+	src, err := local.NewSource(srcDir)
+	if err != nil {
+		t.Fatalf("new local source: %v", err)
+	}
+	dst := newOBSSource(t, env, dstPrefix)
+	store := openTestStore(t)
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	exitCode, err := job.Run(ctx)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if err == nil {
+		t.Fatal("expected error for mismatch")
+	}
+
+	// fix the mismatch
+	putOBSObject(t, env, dstPrefix, "a.txt", "alpha")
+
+	job2 := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumResume(true),
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
+
+	exitCode, err = job2.Run(ctx)
+	if err != nil {
+		t.Fatalf("resume cksum job: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
 }

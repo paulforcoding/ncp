@@ -11,23 +11,34 @@ import (
 
 	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/copy"
-	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/impls/storage/remote"
 	"github.com/zp001/ncp/pkg/model"
 )
 
-func TestIntegration_COSToLocal_Copy(t *testing.T) {
-	env := requireCOS(t)
-	srcPrefix := newCOSPrefix(t, env, "cos2local-copy-src")
+// --- Remote → OBS copy ---
+
+func TestIntegration_RemoteToOBS_Copy(t *testing.T) {
+	env := requireOBS(t)
+	serveDir := t.TempDir()
+	dstPrefix := newOBSPrefix(t, env, "remote2obs-copy-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	}
-	seedCOSPrefix(t, env, srcPrefix, files)
+	for relPath, content := range files {
+		path := filepath.Join(serveDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
 
-	src := newCOSSource(t, env, srcPrefix)
-	dstDir := t.TempDir()
-	dst, _ := local.NewDestination(dstDir)
+	addr := startTestServer(t, serveDir)
+
+	src, err := remote.NewSource(addr, serveDir)
+	if err != nil {
+		t.Fatalf("new remote source: %v", err)
+	}
+	dst := newOBSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := copy.NewJob(src, dst, store,
@@ -46,35 +57,35 @@ func TestIntegration_COSToLocal_Copy(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
-	for relPath, want := range files {
-		path := filepath.Join(dstDir, relPath)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", relPath, err)
-		}
-		if string(data) != want {
-			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
-		}
-	}
+	verifyOBSPrefix(t, env, dstPrefix, files)
 }
 
-func TestIntegration_COSToLocal_Copy_Resume(t *testing.T) {
-	env := requireCOS(t)
-	srcPrefix := newCOSPrefix(t, env, "cos2local-copy-r-src")
+func TestIntegration_RemoteToOBS_Copy_Resume(t *testing.T) {
+	env := requireOBS(t)
+	serveDir := t.TempDir()
+	dstPrefix := newOBSPrefix(t, env, "remote2obs-copy-r-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 		"c.txt":        "gamma",
 	}
-	seedCOSPrefix(t, env, srcPrefix, files)
+	for relPath, content := range files {
+		path := filepath.Join(serveDir, relPath)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
 
-	src := newCOSSource(t, env, srcPrefix)
-	dstDir := t.TempDir()
-	realDst, _ := local.NewDestination(dstDir)
+	addr := startTestServer(t, serveDir)
+
+	src, err := remote.NewSource(addr, serveDir)
+	if err != nil {
+		t.Fatalf("new remote source: %v", err)
+	}
+	realDst := newOBSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
-	failDst := newFailAfterNShared(realDst, 1)
+	failDst := &failAfterN{Destination: realDst, failAt: 1}
 
 	job := copy.NewJob(src, failDst, store,
 		copy.WithParallelism(2),
@@ -102,42 +113,34 @@ func TestIntegration_COSToLocal_Copy_Resume(t *testing.T) {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
 
-	for relPath, want := range files {
-		path := filepath.Join(dstDir, relPath)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", relPath, err)
-		}
-		if string(data) != want {
-			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
-		}
-	}
+	verifyOBSPrefix(t, env, dstPrefix, files)
 }
 
-// --- COS → Local cksum ---
+// --- Remote → OBS cksum ---
 
-func TestIntegration_COSToLocal_Cksum(t *testing.T) {
-	env := requireCOS(t)
-	srcPrefix := newCOSPrefix(t, env, "cos2local-cksum-src")
+func TestIntegration_RemoteToOBS_Cksum(t *testing.T) {
+	env := requireOBS(t)
+	serveDir := t.TempDir()
+	dstPrefix := newOBSPrefix(t, env, "remote2obs-cksum-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	}
-	seedCOSPrefix(t, env, srcPrefix, files)
-
-	dstDir := t.TempDir()
 	for relPath, content := range files {
-		path := filepath.Join(dstDir, relPath)
+		path := filepath.Join(serveDir, relPath)
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
+	seedOBSPrefix(t, env, dstPrefix, files)
 
-	src := newCOSSource(t, env, srcPrefix)
-	dst, err := local.NewSource(dstDir)
+	addr := startTestServer(t, serveDir)
+
+	src, err := remote.NewSource(addr, serveDir)
 	if err != nil {
-		t.Fatalf("new local source: %v", err)
+		t.Fatalf("new remote source: %v", err)
 	}
+	dst := newOBSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -157,7 +160,7 @@ func TestIntegration_COSToLocal_Cksum(t *testing.T) {
 	}
 
 	// mismatch branch
-	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("DIFFERENT"), 0o644)
+	putOBSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
 	store2 := openTestStore(t)
 	job2 := cksum.NewCksumJob(src, dst, store2,
 		cksum.WithCksumParallelism(2),
@@ -172,30 +175,31 @@ func TestIntegration_COSToLocal_Cksum(t *testing.T) {
 	}
 }
 
-func TestIntegration_COSToLocal_Cksum_Resume(t *testing.T) {
-	env := requireCOS(t)
-	srcPrefix := newCOSPrefix(t, env, "cos2local-cksum-r-src")
+func TestIntegration_RemoteToOBS_Cksum_Resume(t *testing.T) {
+	env := requireOBS(t)
+	serveDir := t.TempDir()
+	dstPrefix := newOBSPrefix(t, env, "remote2obs-cksum-r-dst")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	}
-	seedCOSPrefix(t, env, srcPrefix, files)
-
-	dstDir := t.TempDir()
 	for relPath, content := range files {
-		path := filepath.Join(dstDir, relPath)
+		path := filepath.Join(serveDir, relPath)
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
+	seedOBSPrefix(t, env, dstPrefix, files)
 	// introduce mismatch
-	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("DIFFERENT"), 0o644)
+	putOBSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
 
-	src := newCOSSource(t, env, srcPrefix)
-	dst, err := local.NewSource(dstDir)
+	addr := startTestServer(t, serveDir)
+
+	src, err := remote.NewSource(addr, serveDir)
 	if err != nil {
-		t.Fatalf("new local source: %v", err)
+		t.Fatalf("new remote source: %v", err)
 	}
+	dst := newOBSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -215,7 +219,7 @@ func TestIntegration_COSToLocal_Cksum_Resume(t *testing.T) {
 	}
 
 	// fix the mismatch
-	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("alpha"), 0o644)
+	putOBSObject(t, env, dstPrefix, "a.txt", "alpha")
 
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),

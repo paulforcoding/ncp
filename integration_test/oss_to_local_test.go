@@ -15,20 +15,19 @@ import (
 	"github.com/zp001/ncp/pkg/model"
 )
 
-func TestIntegration_LocalToCOS_Copy(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-copy-dst")
+func TestIntegration_OSSToLocal_Copy(t *testing.T) {
+	env := requireOSS(t)
+	srcPrefix := newOSSPrefix(t, env, "oss2local-copy-src")
 
-	srcDir := t.TempDir()
-	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("alpha"), 0o644)
-	os.WriteFile(filepath.Join(srcDir, "subdir", "b.txt"), []byte("beta"), 0o644)
-
-	src, err := local.NewSource(srcDir)
-	if err != nil {
-		t.Fatalf("new local source: %v", err)
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
 	}
-	dst := newCOSDestination(t, env, dstPrefix)
+	seedOSSPrefix(t, env, srcPrefix, files)
+
+	src := newOSSSource(t, env, srcPrefix)
+	dstDir := t.TempDir()
+	dst, _ := local.NewDestination(dstDir)
 	store := openTestStore(t)
 
 	job := copy.NewJob(src, dst, store,
@@ -47,23 +46,32 @@ func TestIntegration_LocalToCOS_Copy(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 
-	verifyCOSPrefix(t, env, dstPrefix, map[string]string{
-		"a.txt":        "alpha",
-		"subdir/b.txt": "beta",
-	})
+	for relPath, want := range files {
+		path := filepath.Join(dstDir, relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
+		}
+	}
 }
 
-func TestIntegration_LocalToCOS_Copy_Resume(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-copy-r-dst")
+func TestIntegration_OSSToLocal_Copy_Resume(t *testing.T) {
+	env := requireOSS(t)
+	srcPrefix := newOSSPrefix(t, env, "oss2local-copy-r-src")
 
-	srcDir := t.TempDir()
-	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("alpha"), 0o644)
-	os.WriteFile(filepath.Join(srcDir, "b.txt"), []byte("beta"), 0o644)
-	os.WriteFile(filepath.Join(srcDir, "c.txt"), []byte("gamma"), 0o644)
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"subdir/b.txt": "beta",
+		"c.txt":        "gamma",
+	}
+	seedOSSPrefix(t, env, srcPrefix, files)
 
-	src, _ := local.NewSource(srcDir)
-	realDst := newCOSDestination(t, env, dstPrefix)
+	src := newOSSSource(t, env, srcPrefix)
+	dstDir := t.TempDir()
+	realDst, _ := local.NewDestination(dstDir)
 	store := openTestStore(t)
 
 	failDst := newFailAfterNShared(realDst, 1)
@@ -94,80 +102,42 @@ func TestIntegration_LocalToCOS_Copy_Resume(t *testing.T) {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
 
-	verifyCOSPrefix(t, env, dstPrefix, map[string]string{
-		"a.txt": "alpha",
-		"b.txt": "beta",
-		"c.txt": "gamma",
-	})
-}
-
-func TestIntegration_LocalToCOS_Copy_LargeFile(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-large-dst")
-
-	srcDir := t.TempDir()
-	// Create a 2MB file to trigger multipart upload (COS minPartSize = 1MB)
-	largeContent := make([]byte, 2<<20)
-	for i := range largeContent {
-		largeContent[i] = byte(i % 256)
-	}
-	os.WriteFile(filepath.Join(srcDir, "large.bin"), largeContent, 0o644)
-
-	src, _ := local.NewSource(srcDir)
-	dst := newCOSDestination(t, env, dstPrefix)
-	store := openTestStore(t)
-
-	job := copy.NewJob(src, dst, store,
-		copy.WithParallelism(2),
-		copy.WithCksumAlgo(model.CksumMD5),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	exitCode, err := job.Run(ctx)
-	if err != nil {
-		t.Fatalf("copy job: %v", err)
-	}
-	if exitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", exitCode)
-	}
-
-	// Verify via COS that the file exists with correct size
-	client := newCOSClient(env)
-	resp, err := client.Object.Head(ctx, dstPrefix+"large.bin", nil)
-	if err != nil {
-		t.Fatalf("head large.bin: %v", err)
-	}
-	if resp.Header.Get("Content-Length") != "2097152" {
-		t.Errorf("expected Content-Length=2097152, got %s", resp.Header.Get("Content-Length"))
+	for relPath, want := range files {
+		path := filepath.Join(dstDir, relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Errorf("content mismatch %s: got %q, want %q", relPath, string(data), want)
+		}
 	}
 }
 
-// --- Local → COS cksum ---
+// --- OSS → Local cksum ---
 
-func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-cksum-dst")
+func TestIntegration_OSSToLocal_Cksum(t *testing.T) {
+	env := requireOSS(t)
+	srcPrefix := newOSSPrefix(t, env, "oss2local-cksum-src")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	}
+	seedOSSPrefix(t, env, srcPrefix, files)
 
-	srcDir := t.TempDir()
+	dstDir := t.TempDir()
 	for relPath, content := range files {
-		path := filepath.Join(srcDir, relPath)
+		path := filepath.Join(dstDir, relPath)
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
-	seedCOSPrefix(t, env, dstPrefix, files)
 
-	src, err := local.NewSource(srcDir)
+	src := newOSSSource(t, env, srcPrefix)
+	dst, err := local.NewSource(dstDir)
 	if err != nil {
 		t.Fatalf("new local source: %v", err)
 	}
-	dst := newCOSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -187,7 +157,7 @@ func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
 	}
 
 	// mismatch branch
-	putCOSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("DIFFERENT"), 0o644)
 	store2 := openTestStore(t)
 	job2 := cksum.NewCksumJob(src, dst, store2,
 		cksum.WithCksumParallelism(2),
@@ -202,30 +172,30 @@ func TestIntegration_LocalToCOS_Cksum(t *testing.T) {
 	}
 }
 
-func TestIntegration_LocalToCOS_Cksum_Resume(t *testing.T) {
-	env := requireCOS(t)
-	dstPrefix := newCOSPrefix(t, env, "local2cos-cksum-r-dst")
+func TestIntegration_OSSToLocal_Cksum_Resume(t *testing.T) {
+	env := requireOSS(t)
+	srcPrefix := newOSSPrefix(t, env, "oss2local-cksum-r-src")
 
 	files := map[string]string{
 		"a.txt":        "alpha",
 		"subdir/b.txt": "beta",
 	}
+	seedOSSPrefix(t, env, srcPrefix, files)
 
-	srcDir := t.TempDir()
+	dstDir := t.TempDir()
 	for relPath, content := range files {
-		path := filepath.Join(srcDir, relPath)
+		path := filepath.Join(dstDir, relPath)
 		os.MkdirAll(filepath.Dir(path), 0o755)
 		os.WriteFile(path, []byte(content), 0o644)
 	}
-	seedCOSPrefix(t, env, dstPrefix, files)
 	// introduce mismatch
-	putCOSObject(t, env, dstPrefix, "a.txt", "DIFFERENT")
+	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("DIFFERENT"), 0o644)
 
-	src, err := local.NewSource(srcDir)
+	src := newOSSSource(t, env, srcPrefix)
+	dst, err := local.NewSource(dstDir)
 	if err != nil {
 		t.Fatalf("new local source: %v", err)
 	}
-	dst := newCOSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
 	job := cksum.NewCksumJob(src, dst, store,
@@ -245,7 +215,7 @@ func TestIntegration_LocalToCOS_Cksum_Resume(t *testing.T) {
 	}
 
 	// fix the mismatch
-	putCOSObject(t, env, dstPrefix, "a.txt", "alpha")
+	os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("alpha"), 0o644)
 
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
