@@ -11,10 +11,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/internal/serve"
 	"github.com/zp001/ncp/pkg/impls/progress/pebble"
 )
+
+func init() {
+	// Load .env if present, ignore error (file may not exist).
+	_ = godotenv.Load("../.env")
+}
 
 // --- Server helpers ---
 
