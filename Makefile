@@ -1,4 +1,4 @@
-VERSION ?= 0.2.0
+VERSION ?= 0.4.1
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
 .PHONY: build test unit integration lint clean
