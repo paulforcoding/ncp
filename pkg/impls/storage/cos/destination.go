@@ -35,7 +35,6 @@ const (
 	metaMD5           = metaPrefix + "md5"
 	metaXattrPrefix   = metaPrefix + "xattr-"
 
-	smallFileThreshold = 1 << 20 // 1MB — below this, use PutObject
 )
 
 // Destination implements storage.Destination for Tencent Cloud COS.

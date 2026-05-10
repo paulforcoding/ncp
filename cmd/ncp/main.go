@@ -294,9 +294,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 
 	exitCode, err := job.Run(ctx)
 
-	src.EndTask(ctx, storage.TaskSummary{})
+	_ = src.EndTask(ctx, storage.TaskSummary{})
 	if dst != nil {
-		dst.EndTask(ctx, storage.TaskSummary{})
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	// Update meta.json
@@ -382,9 +382,9 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 	exitCode, err := job.Run(ctx)
 
-	src.EndTask(ctx, storage.TaskSummary{})
+	_ = src.EndTask(ctx, storage.TaskSummary{})
 	if dst != nil {
-		dst.EndTask(ctx, storage.TaskSummary{})
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
@@ -540,9 +540,9 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	job := copy.NewJob(src, dst, store, jobOpts...)
 	exitCode, err := job.Run(ctx)
 
-	src.EndTask(ctx, storage.TaskSummary{})
+	_ = src.EndTask(ctx, storage.TaskSummary{})
 	if dst != nil {
-		dst.EndTask(ctx, storage.TaskSummary{})
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	return exitCode, err
@@ -578,7 +578,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 	exitCode, err := job.Run(ctx)
 
 	for _, s := range []storage.Source{src, dst} {
-		s.EndTask(ctx, storage.TaskSummary{})
+		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	return exitCode, err
@@ -689,7 +689,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	exitCode, err := job.Run(ctx)
 
 	for _, s := range []storage.Source{src, dst} {
-		s.EndTask(ctx, storage.TaskSummary{})
+		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
@@ -760,7 +760,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	exitCode, err := job.Run(ctx)
 
 	for _, s := range []storage.Source{src, dst} {
-		s.EndTask(ctx, storage.TaskSummary{})
+		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
