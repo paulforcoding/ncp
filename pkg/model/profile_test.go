@@ -11,7 +11,7 @@ func TestIsCloudScheme(t *testing.T) {
 		"file": false,
 		"":     false,
 		"ncp":  false,
-		"cos":  false, // not yet enabled
+		"cos":  true,
 	}
 	for scheme, want := range cases {
 		if got := IsCloudScheme(scheme); got != want {

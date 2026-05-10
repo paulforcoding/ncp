@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zp001/ncp/pkg/impls/storage/aliyun"
+	"github.com/zp001/ncp/pkg/impls/storage/cos"
 	"github.com/zp001/ncp/pkg/impls/storage/local"
 	"github.com/zp001/ncp/pkg/impls/storage/remote"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -44,6 +45,19 @@ func NewSource(srcPath string, profiles map[string]model.Profile) (storage.Sourc
 			return nil, fmt.Errorf("oss: bucket name required in URL (oss://<profile>@bucket/prefix)")
 		}
 		return aliyun.NewSource(aliyun.SourceConfig{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
+	case "cos":
+		bucket, prefix := parseCOSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("cos: bucket name required in URL (cos://<profile>@bucket/prefix)")
+		}
+		return cos.NewSource(cos.SourceConfig{
 			Endpoint: prof.Endpoint,
 			Region:   prof.Region,
 			AK:       prof.AK,
@@ -89,6 +103,19 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			return nil, fmt.Errorf("oss: bucket name required in URL (oss://<profile>@bucket/prefix)")
 		}
 		return aliyun.NewDestination(aliyun.Config{
+			Endpoint: prof.Endpoint,
+			Region:   prof.Region,
+			AK:       prof.AK,
+			SK:       prof.SK,
+			Bucket:   bucket,
+			Prefix:   prefix,
+		})
+	case "cos":
+		bucket, prefix := parseCOSURL(u)
+		if bucket == "" {
+			return nil, fmt.Errorf("cos: bucket name required in URL (cos://<profile>@bucket/prefix)")
+		}
+		return cos.NewDestination(cos.Config{
 			Endpoint: prof.Endpoint,
 			Region:   prof.Region,
 			AK:       prof.AK,
@@ -145,6 +172,17 @@ func resolveProfile(u *url.URL, profiles map[string]model.Profile) (*model.Profi
 // parseOSSURL extracts bucket and prefix from an oss:// URL.
 // oss://prod@mybucket/path/to/dir → bucket="mybucket", prefix="path/to/dir/"
 func parseOSSURL(u *url.URL) (bucket, prefix string) {
+	bucket = u.Host
+	prefix = strings.TrimPrefix(u.Path, "/")
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return bucket, prefix
+}
+
+// parseCOSURL extracts bucket and prefix from a cos:// URL.
+// cos://prod@mybucket-1250000000/path/to/dir → bucket="mybucket-1250000000", prefix="path/to/dir/"
+func parseCOSURL(u *url.URL) (bucket, prefix string) {
 	bucket = u.Host
 	prefix = strings.TrimPrefix(u.Path, "/")
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
