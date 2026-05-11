@@ -16,6 +16,7 @@ import (
 type Job struct {
 	src            storage.Source
 	dst            storage.Destination
+	srcFactory     func(id int) (storage.Source, error)
 	dstFactory     func(id int) (storage.Destination, error)
 	dstBase        string
 	store          progress.ProgressStore
@@ -64,6 +65,9 @@ func WithEnsureDirMtime(v bool) JobOption               { return func(j *Job) { 
 func WithResume(v bool) JobOption                       { return func(j *Job) { j.resume = v } }
 func WithSkipByMtime(v bool) JobOption                  { return func(j *Job) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
+func WithSrcFactory(f func(id int) (storage.Source, error)) JobOption {
+	return func(j *Job) { j.srcFactory = f }
+}
 func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 	return func(j *Job) { j.dstFactory = f }
 }
@@ -96,7 +100,7 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 
 	dbWg.Wait()
 
-	return j.finalize(walker, dbWriter, walkErr)
+	return j.finalize(ctx, walker, dbWriter, walkErr)
 }
 
 func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- storage.DiscoverItem) error {
@@ -126,6 +130,22 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+
+			src := j.src
+			if j.srcFactory != nil {
+				var err error
+				src, err = j.srcFactory(id)
+				if err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				if err := src.BeginTask(ctx, j.taskID); err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				defer src.EndTask(ctx, storage.TaskSummary{})
+			}
+
 			dst := j.dst
 			if j.dstFactory != nil {
 				var err error
@@ -134,17 +154,13 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 					j.sendFactoryError(id, discoverCh, resultCh, err)
 					return
 				}
-				if err := dst.Connect(ctx); err != nil {
-					j.sendFactoryError(id, discoverCh, resultCh, err)
-					return
-				}
-				defer dst.Close(ctx)
 				if err := dst.BeginTask(ctx, j.taskID); err != nil {
 					j.sendFactoryError(id, discoverCh, resultCh, err)
 					return
 				}
 			}
-			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
+
+			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
 			r.Run(ctx, discoverCh, resultCh)
 		}(i)
 	}
@@ -174,7 +190,7 @@ func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult
 	return &wg
 }
 
-func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
+func (j *Job) finalize(ctx context.Context, walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
 	done, failed, total := dbWriter.Stats()
 
 	exitCode := 0
@@ -190,7 +206,7 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 
 	// EnsureDirMtime
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
-		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
+		if err := EnsureDirMtime(ctx, j.store, j.src, j.dstBase); err != nil {
 			slog.Warn("ensure dir mtime failed", "error", err)
 		}
 	}

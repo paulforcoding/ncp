@@ -16,6 +16,8 @@ import (
 type CksumJob struct {
 	src         storage.Source
 	dst         storage.Source
+	srcFactory  func(id int) (storage.Source, error)
+	dstFactory  func(id int) (storage.Source, error)
 	store       progress.ProgressStore
 	taskID      string
 	parallelism int
@@ -61,6 +63,12 @@ func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption {
 	return func(j *CksumJob) { j.cksumAlgo = algo }
 }
 func WithCksumChannelBuf(n int) CksumJobOption { return func(j *CksumJob) { j.channelBuf = n } }
+func WithCksumSrcFactory(f func(id int) (storage.Source, error)) CksumJobOption {
+	return func(j *CksumJob) { j.srcFactory = f }
+}
+func WithCksumDstFactory(f func(id int) (storage.Source, error)) CksumJobOption {
+	return func(j *CksumJob) { j.dstFactory = f }
+}
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {
@@ -118,7 +126,34 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
+
+			src := j.src
+			if j.srcFactory != nil {
+				var err error
+				src, err = j.srcFactory(id)
+				if err != nil {
+					return
+				}
+				if err := src.BeginTask(ctx, j.taskID); err != nil {
+					return
+				}
+				defer src.EndTask(ctx, storage.TaskSummary{})
+			}
+
+			dst := j.dst
+			if j.dstFactory != nil {
+				var err error
+				dst, err = j.dstFactory(id)
+				if err != nil {
+					return
+				}
+				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					return
+				}
+				defer dst.EndTask(ctx, storage.TaskSummary{})
+			}
+
+			w := NewCksumWorker(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
 			w.Run(ctx, cksumCh, resultCh)
 		}(i)
 	}

@@ -17,12 +17,6 @@ type Stater interface {
 	Stat(ctx context.Context, relPath string) (DiscoverItem, error)
 }
 
-// OpenCloser manages backend connection lifecycle.
-type OpenCloser interface {
-	Connect(ctx context.Context) error
-	Close(ctx context.Context) error
-}
-
 // TaskBoundary marks the start and end of a task.
 type TaskBoundary interface {
 	BeginTask(ctx context.Context, taskID string) error
@@ -45,12 +39,11 @@ type FileReader interface {
 	Attr() FileAttr
 }
 
-// Source combines Walker, Stater, FileReader creation, connection lifecycle,
-// and task boundary notification for a storage backend.
+// Source combines Walker, Stater, FileReader creation, and task boundary
+// notification for a storage backend.
 type Source interface {
 	Walker
 	Stater
-	OpenCloser
 	TaskBoundary
 	Open(ctx context.Context, relPath string) (FileReader, error)
 	URI() string
@@ -64,13 +57,11 @@ type FileWriter interface {
 	BytesWritten() int64
 }
 
-// Destination writes files to a storage backend. It embeds Stater,
-// OpenCloser, and TaskBoundary so that callers no longer need to do a
-// type assertion for skip-by-mtime, connection lifecycle, or task
-// finalization.
+// Destination writes files to a storage backend. It embeds Stater and
+// TaskBoundary so that callers no longer need to do a type assertion for
+// skip-by-mtime or task finalization.
 type Destination interface {
 	Stater
-	OpenCloser
 	TaskBoundary
 	OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (FileWriter, error)
 	Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error

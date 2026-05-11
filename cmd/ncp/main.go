@@ -258,20 +258,12 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	// Source lifecycle
-	if err := src.Connect(ctx); err != nil {
-		return fmt.Errorf("connect source: %w", err)
-	}
-	defer src.Close(ctx)
 	if err := src.BeginTask(ctx, taskID); err != nil {
 		return fmt.Errorf("begin task on source: %w", err)
 	}
 
 	// Destination lifecycle (non-factory)
 	if dst != nil {
-		if err := dst.Connect(ctx); err != nil {
-			return fmt.Errorf("connect destination: %w", err)
-		}
-		defer dst.Close(ctx)
 		if err := dst.BeginTask(ctx, taskID); err != nil {
 			return fmt.Errorf("begin task on destination: %w", err)
 		}
@@ -347,18 +339,10 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	}
 	defer store.Close()
 
-	if err := src.Connect(ctx); err != nil {
-		return fmt.Errorf("open source: %w", err)
-	}
-	defer src.Close(ctx)
 	if err := src.BeginTask(ctx, taskID); err != nil {
 		return fmt.Errorf("begin task on source: %w", err)
 	}
 	if dst != nil {
-		if err := dst.Connect(ctx); err != nil {
-			return fmt.Errorf("open destination: %w", err)
-		}
-		defer dst.Close(ctx)
 		if err := dst.BeginTask(ctx, taskID); err != nil {
 			return fmt.Errorf("begin task on destination: %w", err)
 		}
@@ -506,18 +490,10 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	}
 	defer store.Close()
 
-	if err := src.Connect(ctx); err != nil {
-		return 1, fmt.Errorf("open source: %w", err)
-	}
-	defer src.Close(ctx)
 	if err := src.BeginTask(ctx, taskID); err != nil {
 		return 1, fmt.Errorf("begin task on source: %w", err)
 	}
 	if dst != nil {
-		if err := dst.Connect(ctx); err != nil {
-			return 1, fmt.Errorf("open destination: %w", err)
-		}
-		defer dst.Close(ctx)
 		if err := dst.BeginTask(ctx, taskID); err != nil {
 			return 1, fmt.Errorf("begin task on destination: %w", err)
 		}
@@ -549,23 +525,19 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 }
 
 func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
-	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return 1, err
 	}
 	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
-		if err := s.Connect(ctx); err != nil {
-			return 1, fmt.Errorf("open source: %w", err)
-		}
-		defer s.Close(ctx)
 		if err := s.BeginTask(ctx, taskID); err != nil {
 			return 1, fmt.Errorf("begin task on source: %w", err)
 		}
 	}
 
-	job := cksum.NewCksumJob(src, dst, store,
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -574,7 +546,10 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
 	exitCode, err := job.Run(ctx)
 
 	for _, s := range []storage.Source{src, dst} {
@@ -660,23 +635,19 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	defer fl.Close()
 
 	// Dependency injection
-	src, dst, store, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
-		if err := s.Connect(ctx); err != nil {
-			return fmt.Errorf("open source: %w", err)
-		}
-		defer s.Close(ctx)
 		if err := s.BeginTask(ctx, taskID); err != nil {
 			return fmt.Errorf("begin task on source: %w", err)
 		}
 	}
 
-	job := cksum.NewCksumJob(src, dst, store,
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -684,7 +655,10 @@ func runCksum(cmd *cobra.Command, args []string) error {
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
 
@@ -730,23 +704,19 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	}
 	defer fl.Close()
 
-	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
-		if err := s.Connect(ctx); err != nil {
-			return fmt.Errorf("open source: %w", err)
-		}
-		defer s.Close(ctx)
 		if err := s.BeginTask(ctx, taskID); err != nil {
 			return fmt.Errorf("begin task on source: %w", err)
 		}
 	}
 
-	job := cksum.NewCksumJob(src, dst, store,
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -755,7 +725,10 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
 
@@ -774,24 +747,42 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 // setupCksumDeps creates src Source, dst Source, and opens the Pebble store.
 // Both src and dst are Sources (readable) for checksum comparison.
-func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, error) {
+func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, []cksum.CksumJobOption, error) {
+	var extraOpts []cksum.CksumJobOption
+
 	src, err := di.NewSource(srcPath, cfg.Profiles)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create source: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+	}
+
+	su, _ := di.ParsePath(srcPath)
+	if su.Scheme == "ncp" {
+		srcFactory := func(id int) (storage.Source, error) {
+			return di.NewSource(srcPath, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
 	}
 
 	dst, err := di.NewSource(dstPath, cfg.Profiles)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+	}
+
+	du, _ := di.ParsePath(dstPath)
+	if du.Scheme == "ncp" {
+		dstFactory := func(id int) (storage.Source, error) {
+			return di.NewSource(dstPath, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
 	}
 
 	dbDir := filepath.Join(progressDir, taskID, "db")
 	store, err := di.NewProgressStore(dbDir)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open progress store: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
 	}
 
-	return src, dst, store, nil
+	return src, dst, store, extraOpts, nil
 }
 
 // runServe handles `ncp serve` — starts the ncp protocol server.
@@ -961,6 +952,18 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
+		}
+	}
+
+	// Set srcFactory for remote sources
+	for _, sp := range srcPaths {
+		su, _ := di.ParsePath(sp)
+		if su.Scheme == "ncp" {
+			srcFactory := func(id int) (storage.Source, error) {
+				return di.NewSource(sp, cfg.Profiles)
+			}
+			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
+			break
 		}
 	}
 

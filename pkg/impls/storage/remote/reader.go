@@ -57,12 +57,12 @@ func (r *Reader) Read(ctx context.Context, p []byte) (int, error) {
 	return n, nil
 }
 
-// Close sends MsgClose for the read fd and closes the connection.
+// Close sends MsgClose to release the read fd.
+// The underlying connection is owned by Source and closed by EndTask.
 func (r *Reader) Close(ctx context.Context) error {
 	msg := &protocol.CloseMsg{FD: r.fd}
-	// Best-effort close — ignore error since connection is going away
 	_, _ = r.conn.SendMsgRecvAck(protocol.MsgClose, msg.Encode())
-	return r.conn.Close()
+	return nil
 }
 
 // Size returns the file size. Remote protocol does not expose size via fd;

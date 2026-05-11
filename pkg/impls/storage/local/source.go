@@ -146,12 +146,6 @@ func (s *Source) toRelPath(absPath string) (string, error) {
 // Base returns the source base directory.
 func (s *Source) URI() string { return s.base }
 
-// Connect is a no-op for local sources.
-func (s *Source) Connect(ctx context.Context) error { return nil }
-
-// Close is a no-op for local sources.
-func (s *Source) Close(ctx context.Context) error { return nil }
-
 // BeginTask is a no-op for local sources.
 func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
 

@@ -136,8 +136,14 @@ func TestIntegration_RemotePull_Walk(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
+	ctx := context.Background()
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
+
 	var items []storage.DiscoverItem
-	err = src.Walk(context.Background(), func(_ context.Context, item storage.DiscoverItem) error {
+	err = src.Walk(ctx, func(_ context.Context, item storage.DiscoverItem) error {
 		items = append(items, item)
 		return nil
 	})
@@ -178,6 +184,11 @@ func TestIntegration_RemotePull_OpenRead(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
+
 	r, err := src.Open(ctx, "data.bin")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -213,7 +224,13 @@ func TestIntegration_RemotePull_Stat(t *testing.T) {
 		t.Fatalf("new source: %v", err)
 	}
 
-	item, err := src.Stat(context.Background(), "statme.txt")
+	ctx := context.Background()
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
+
+	item, err := src.Stat(ctx, "statme.txt")
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -256,6 +273,11 @@ func TestIntegration_RemotePull_BasicCopy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
+
 	exitCode, err := job.Run(ctx)
 	if err != nil {
 		t.Fatalf("pull job: %v", err)
@@ -283,14 +305,24 @@ func TestIntegration_RemotePull_ParallelCopy(t *testing.T) {
 	srcObj, _ := remote.NewSource(addr, serveDir)
 	dstObj, _ := local.NewDestination(dst)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	store := openTestStore(t)
 	job := copy.NewJob(srcObj, dstObj, store,
 		copy.WithParallelism(4),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithEnsureDirMtime(false),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -345,13 +377,23 @@ func TestIntegration_RemoteRoundTrip(t *testing.T) {
 	pullDst, _ := local.NewDestination(dst)
 	pullStore := openTestStore(t)
 
+	pullSrcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	pullJob := copy.NewJob(pullSrc, pullDst, pullStore,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(pullSrcFactory),
 		copy.WithEnsureDirMtime(false),
 	)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
+
+	if err := pullSrc.BeginTask(ctx2, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer pullSrc.EndTask(ctx2, storage.TaskSummary{})
 
 	exitCode, err = pullJob.Run(ctx2)
 	if err != nil {
@@ -395,6 +437,11 @@ func TestIntegration_RemotePull_LargeFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
+
 	exitCode, err := job.Run(ctx)
 	if err != nil {
 		t.Fatalf("pull job: %v", err)
@@ -433,6 +480,11 @@ func TestIntegration_RemotePull_EmptyFile(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -473,6 +525,11 @@ func TestIntegration_RemotePull_Symlink(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
+
 	exitCode, err := job.Run(ctx)
 	if err != nil {
 		t.Fatalf("pull job: %v", err)
@@ -511,6 +568,11 @@ func TestIntegration_RemotePull_ChinesePath(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -562,17 +624,27 @@ func TestIntegration_RemotePull_Resume(t *testing.T) {
 	srcObj, _ := remote.NewSource(addr, serveDir)
 	realDst, _ := local.NewDestination(dst)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	store := openTestStore(t)
 
 	const failAt = 30
 	failDst := &failAfterNOpen{Destination: realDst, failAt: failAt}
 
+	ctx := context.Background()
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+
 	job := copy.NewJob(srcObj, failDst, store,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithEnsureDirMtime(false),
 	)
 
-	exitCode, err := job.Run(context.Background())
+	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
 		t.Fatalf("expected exit code 2, got %d", exitCode)
 	}
@@ -583,16 +655,19 @@ func TestIntegration_RemotePull_Resume(t *testing.T) {
 	// Resume with real destination
 	job2 := copy.NewJob(srcObj, realDst, store,
 		copy.WithResume(true),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithEnsureDirMtime(false),
 	)
 
-	exitCode, err = job2.Run(context.Background())
+	exitCode, err = job2.Run(ctx)
 	if err != nil {
 		t.Fatalf("resume job: %v", err)
 	}
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	if err := VerifyCopy(serveDir, dst); err != nil {
 		t.Fatalf("verify copy after resume: %v", err)
@@ -624,12 +699,16 @@ func TestIntegration_RemoteToRemote_Copy(t *testing.T) {
 	srcObj, _ := remote.NewSource(addr, srcDir)
 	store := openTestStore(t)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, srcDir)
+	}
 	dstFactory := func(id int) (storage.Destination, error) {
 		return remote.NewDestination(addr, dstDir)
 	}
 
 	job := copy.NewJob(srcObj, nil, store,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithDstFactory(dstFactory),
 		copy.WithEnsureDirMtime(false),
 		copy.WithDstBase("ncp://"+addr),
@@ -637,6 +716,11 @@ func TestIntegration_RemoteToRemote_Copy(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -682,6 +766,10 @@ func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
 	srcObj, _ := remote.NewSource(addr, srcDir)
 	store := openTestStore(t)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, srcDir)
+	}
+
 	mu := &sync.Mutex{}
 	count := 0
 	dstFactory := func(id int) (storage.Destination, error) {
@@ -692,14 +780,20 @@ func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
 		return &failAfterNShared{Destination: dst, mu: mu, count: &count, failAt: 1}, nil
 	}
 
+	ctx := context.Background()
+	if err := srcObj.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+
 	job := copy.NewJob(srcObj, nil, store,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithDstFactory(dstFactory),
 		copy.WithEnsureDirMtime(false),
 		copy.WithDstBase("ncp://"+addr),
 	)
 
-	exitCode, err := job.Run(context.Background())
+	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
 		t.Fatalf("expected exit code 2, got %d", exitCode)
 	}
@@ -713,18 +807,21 @@ func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
 
 	job2 := copy.NewJob(srcObj, nil, store,
 		copy.WithResume(true),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithDstFactory(dstFactory2),
 		copy.WithEnsureDirMtime(false),
 		copy.WithDstBase("ncp://"+addr),
 	)
 
-	exitCode, err = job2.Run(context.Background())
+	exitCode, err = job2.Run(ctx)
 	if err != nil {
 		t.Fatalf("resume job: %v", err)
 	}
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	srcObj.EndTask(ctx, storage.TaskSummary{})
 
 	for relPath, want := range files {
 		path := filepath.Join(dstDir, relPath)

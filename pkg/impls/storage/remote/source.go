@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
@@ -18,8 +17,7 @@ import (
 type Source struct {
 	addr     string // server address (host:port)
 	basePath string // URL path (e.g. "/data/backup")
-	conn     *protocol.Conn
-	mu       sync.Mutex
+	conn     *protocol.Conn // instance-level single connection
 }
 
 var _ storage.Source = (*Source)(nil)
@@ -44,8 +42,8 @@ func (s *Source) dialAndInit() (*protocol.Conn, error) {
 	return conn, nil
 }
 
-// Connect establishes a TCP connection and sends MsgInit.
-func (s *Source) Connect(ctx context.Context) error {
+// BeginTask establishes the TCP connection and sends MsgInit.
+func (s *Source) BeginTask(ctx context.Context, taskID string) error {
 	conn, err := s.dialAndInit()
 	if err != nil {
 		return err
@@ -54,40 +52,18 @@ func (s *Source) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the underlying connection.
-func (s *Source) Close(ctx context.Context) error {
+// EndTask closes the underlying connection.
+func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error {
 	if s.conn != nil {
 		return s.conn.Close()
 	}
 	return nil
 }
 
-// BeginTask is a no-op for remote sources (initialization happens in Connect).
-func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
-
-// EndTask is a no-op for remote sources.
-func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
-
-func (s *Source) ensureConnected(ctx context.Context) error {
-	if s.conn == nil {
-		return s.Connect(ctx)
-	}
-	return nil
-}
-
 // Walk sends MsgList requests with pagination and calls fn for each entry.
 func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
-	lazyConnect := s.conn == nil
-	if err := s.ensureConnected(ctx); err != nil {
-		return err
-	}
-	if lazyConnect {
-		defer func() {
-			if s.conn != nil {
-				_ = s.conn.Close()
-				s.conn = nil
-			}
-		}()
+	if s.conn == nil {
+		return fmt.Errorf("remote source not connected")
 	}
 
 	token := ""
@@ -99,9 +75,7 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 		}
 
 		listMsg := &protocol.ListMsg{ContinuationToken: token}
-		s.mu.Lock()
 		f, err := s.conn.SendAndRecv(protocol.MsgList, listMsg.Encode())
-		s.mu.Unlock()
 		if err != nil {
 			return fmt.Errorf("remote list: %w", err)
 		}
@@ -134,37 +108,33 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 	return nil
 }
 
-// Open sends MsgOpen with O_RDONLY and returns a FileReader backed by a dedicated connection.
+// Open sends MsgOpen with O_RDONLY and returns a FileReader backed by the shared connection.
 func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
-	conn, err := s.dialAndInit()
-	if err != nil {
-		return nil, err
+	if s.conn == nil {
+		return nil, fmt.Errorf("remote source not connected")
 	}
 
 	msg := &protocol.OpenMsg{
 		Path:  relPath,
 		Flags: 0, // O_RDONLY
 	}
-	ack, err := conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
+	ack, err := s.conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
 	if err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("remote open %s: %w", relPath, err)
 	}
 	_, fd := protocol.DecodeAckFD(ack.Data)
 
-	return &Reader{conn: conn, fd: fd}, nil
+	return &Reader{conn: s.conn, fd: fd}, nil
 }
 
 // Stat sends MsgStat and returns the file metadata as a DiscoverItem.
 func (s *Source) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
-	conn, err := s.dialAndInit()
-	if err != nil {
-		return storage.DiscoverItem{}, err
+	if s.conn == nil {
+		return storage.DiscoverItem{}, fmt.Errorf("remote source not connected")
 	}
-	defer conn.Close()
 
 	msg := &protocol.StatMsg{RelPath: relPath}
-	f, err := conn.SendAndRecv(protocol.MsgStat, msg.Encode())
+	f, err := s.conn.SendAndRecv(protocol.MsgStat, msg.Encode())
 	if err != nil {
 		return storage.DiscoverItem{}, fmt.Errorf("remote stat %s: %w", relPath, err)
 	}

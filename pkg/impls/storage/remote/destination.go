@@ -24,8 +24,8 @@ func NewDestination(addr, basePath string) (*Destination, error) {
 	return &Destination{addr: addr, basePath: basePath}, nil
 }
 
-// Connect establishes a TCP connection and sends MsgInit.
-func (d *Destination) Connect(ctx context.Context) error {
+// BeginTask establishes the TCP connection and sends MsgInit.
+func (d *Destination) BeginTask(ctx context.Context, taskID string) error {
 	conn, err := protocol.Dial(d.addr)
 	if err != nil {
 		return fmt.Errorf("remote destination dial %s: %w", d.addr, err)
@@ -41,37 +41,19 @@ func (d *Destination) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the underlying connection.
-func (d *Destination) Close(ctx context.Context) error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
-	return nil
-}
-
-// BeginTask is a no-op for remote destinations (initialization happens in Open).
-func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
-
-// EndTask sends MsgTaskDone to the server and waits for acknowledgement.
+// EndTask sends MsgTaskDone to the server and closes the connection.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error {
-	if err := d.ensureConnected(ctx); err != nil {
-		return err
-	}
-	_, err := d.conn.SendMsgRecvAck(protocol.MsgTaskDone, nil)
-	return err
-}
-
-func (d *Destination) ensureConnected(ctx context.Context) error {
 	if d.conn == nil {
-		return d.Connect(ctx)
+		return nil
 	}
-	return nil
+	_, _ = d.conn.SendMsgRecvAck(protocol.MsgTaskDone, nil)
+	return d.conn.Close()
 }
 
 // OpenFile sends MsgOpen and returns a Writer backed by the shared connection.
 func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
-	if err := d.ensureConnected(ctx); err != nil {
-		return nil, err
+	if d.conn == nil {
+		return nil, fmt.Errorf("remote destination not connected")
 	}
 	fullPath := d.fullPath(relPath)
 	msg := &protocol.OpenMsg{
@@ -91,8 +73,8 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 
 // Mkdir sends MsgMkdir to the server.
 func (d *Destination) Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error {
-	if err := d.ensureConnected(ctx); err != nil {
-		return err
+	if d.conn == nil {
+		return fmt.Errorf("remote destination not connected")
 	}
 	msg := &protocol.MkdirMsg{
 		Path: d.fullPath(relPath),
@@ -109,8 +91,8 @@ func (d *Destination) Mkdir(ctx context.Context, relPath string, mode os.FileMod
 
 // Symlink sends MsgSymlink to the server.
 func (d *Destination) Symlink(ctx context.Context, relPath string, target string) error {
-	if err := d.ensureConnected(ctx); err != nil {
-		return err
+	if d.conn == nil {
+		return fmt.Errorf("remote destination not connected")
 	}
 	msg := &protocol.SymlinkMsg{
 		Target:   target,
@@ -125,8 +107,8 @@ func (d *Destination) Symlink(ctx context.Context, relPath string, target string
 
 // SetMetadata sends MsgUtime and MsgSetxattr to the server.
 func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr storage.FileAttr) error {
-	if err := d.ensureConnected(ctx); err != nil {
-		return err
+	if d.conn == nil {
+		return fmt.Errorf("remote destination not connected")
 	}
 	fullPath := d.fullPath(relPath)
 
@@ -165,8 +147,8 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 // Stat sends MsgStat and returns the file metadata as a DiscoverItem.
 // Used by skip-by-mtime to check if dst already has the file.
 func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
-	if err := d.ensureConnected(ctx); err != nil {
-		return storage.DiscoverItem{}, err
+	if d.conn == nil {
+		return storage.DiscoverItem{}, fmt.Errorf("remote destination not connected")
 	}
 	msg := &protocol.StatMsg{RelPath: d.fullPath(relPath)}
 	f, err := d.conn.SendAndRecv(protocol.MsgStat, msg.Encode())

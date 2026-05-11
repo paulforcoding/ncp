@@ -209,12 +209,6 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 	return nil
 }
 
-// Connect is a no-op for COS destinations (client is initialized in constructor).
-func (d *Destination) Connect(ctx context.Context) error { return nil }
-
-// Close is a no-op for COS destinations.
-func (d *Destination) Close(ctx context.Context) error { return nil }
-
 // BeginTask is a no-op for COS destinations.
 func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
 

@@ -97,27 +97,6 @@ func (ms *BasenamePrefixedSource) URI() string {
 	return ""
 }
 
-// Connect delegates to all underlying sources.
-func (ms *BasenamePrefixedSource) Connect(ctx context.Context) error {
-	for _, e := range ms.entries {
-		if err := e.src.Connect(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Close delegates to all underlying sources.
-func (ms *BasenamePrefixedSource) Close(ctx context.Context) error {
-	var firstErr error
-	for _, e := range ms.entries {
-		if err := e.src.Close(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
 // BeginTask delegates to all underlying sources.
 func (ms *BasenamePrefixedSource) BeginTask(ctx context.Context, taskID string) error {
 	for _, e := range ms.entries {

@@ -12,6 +12,7 @@ import (
 	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/impls/storage/remote"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -41,13 +42,23 @@ func TestIntegration_RemoteToCOS_Copy(t *testing.T) {
 	dst := newCOSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	job := copy.NewJob(src, dst, store,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithCksumAlgo(model.CksumMD5),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -85,14 +96,24 @@ func TestIntegration_RemoteToCOS_Copy_Resume(t *testing.T) {
 	realDst := newCOSDestination(t, env, dstPrefix)
 	store := openTestStore(t)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	failDst := &failAfterN{Destination: realDst, failAt: 1}
+
+	ctx := context.Background()
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
 
 	job := copy.NewJob(src, failDst, store,
 		copy.WithParallelism(2),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithCksumAlgo(model.CksumMD5),
 	)
 
-	exitCode, err := job.Run(context.Background())
+	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
 		t.Fatalf("expected exit code 2, got %d", exitCode)
 	}
@@ -102,16 +123,19 @@ func TestIntegration_RemoteToCOS_Copy_Resume(t *testing.T) {
 
 	job2 := copy.NewJob(src, realDst, store,
 		copy.WithResume(true),
+		copy.WithSrcFactory(srcFactory),
 		copy.WithCksumAlgo(model.CksumMD5),
 	)
 
-	exitCode, err = job2.Run(context.Background())
+	exitCode, err = job2.Run(ctx)
 	if err != nil {
 		t.Fatalf("resume job: %v", err)
 	}
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	src.EndTask(ctx, storage.TaskSummary{})
 
 	verifyCOSPrefix(t, env, dstPrefix, files)
 }
@@ -143,13 +167,23 @@ func TestIntegration_RemoteToCOS_Cksum(t *testing.T) {
 	dst := newCOSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -164,6 +198,7 @@ func TestIntegration_RemoteToCOS_Cksum(t *testing.T) {
 	store2 := openTestStore(t)
 	job2 := cksum.NewCksumJob(src, dst, store2,
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 	exitCode, err = job2.Run(ctx)
@@ -202,13 +237,22 @@ func TestIntegration_RemoteToCOS_Cksum_Resume(t *testing.T) {
 	dst := newCOSSource(t, env, dstPrefix)
 	store := openTestStore(t)
 
-	job := cksum.NewCksumJob(src, dst, store,
-		cksum.WithCksumParallelism(2),
-		cksum.WithCksumAlgo(model.CksumMD5),
-	)
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task: %v", err)
+	}
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
 
 	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
@@ -224,6 +268,7 @@ func TestIntegration_RemoteToCOS_Cksum_Resume(t *testing.T) {
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
@@ -234,4 +279,6 @@ func TestIntegration_RemoteToCOS_Cksum_Resume(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	src.EndTask(ctx, storage.TaskSummary{})
 }

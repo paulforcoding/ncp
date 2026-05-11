@@ -139,12 +139,6 @@ func (d *Destination) Stat(_ context.Context, relPath string) (storage.DiscoverI
 // Base returns the destination base directory.
 func (d *Destination) URI() string { return d.base }
 
-// Connect is a no-op for local destinations.
-func (d *Destination) Connect(ctx context.Context) error { return nil }
-
-// Close is a no-op for local destinations.
-func (d *Destination) Close(ctx context.Context) error { return nil }
-
 // BeginTask is a no-op for local destinations.
 func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
 

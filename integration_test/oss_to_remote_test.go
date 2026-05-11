@@ -172,13 +172,23 @@ func TestIntegration_OSSToRemote_Cksum(t *testing.T) {
 	}
 	store := openTestStore(t)
 
+	dstFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
+
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := dst.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
+	defer dst.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, err := job.Run(ctx)
 	if err != nil {
@@ -193,6 +203,7 @@ func TestIntegration_OSSToRemote_Cksum(t *testing.T) {
 	store2 := openTestStore(t)
 	job2 := cksum.NewCksumJob(src, dst, store2,
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 	exitCode, err = job2.Run(ctx)
@@ -232,13 +243,22 @@ func TestIntegration_OSSToRemote_Cksum_Resume(t *testing.T) {
 	}
 	store := openTestStore(t)
 
-	job := cksum.NewCksumJob(src, dst, store,
-		cksum.WithCksumParallelism(2),
-		cksum.WithCksumAlgo(model.CksumMD5),
-	)
+	dstFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, serveDir)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if err := dst.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumDstFactory(dstFactory),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
 
 	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
@@ -254,6 +274,7 @@ func TestIntegration_OSSToRemote_Cksum_Resume(t *testing.T) {
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
@@ -264,4 +285,6 @@ func TestIntegration_OSSToRemote_Cksum_Resume(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	dst.EndTask(ctx, storage.TaskSummary{})
 }

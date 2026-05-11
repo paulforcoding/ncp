@@ -220,12 +220,6 @@ func (s *Source) URI() string {
 	return "obs://" + s.bucket + "/" + s.prefix
 }
 
-// Connect is a no-op for OBS sources (client is initialized in constructor).
-func (s *Source) Connect(ctx context.Context) error { return nil }
-
-// Close is a no-op for OBS sources.
-func (s *Source) Close(ctx context.Context) error { return nil }
-
 // BeginTask is a no-op for OBS sources.
 func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
 

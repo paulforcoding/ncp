@@ -190,12 +190,6 @@ func (d *Destination) key(relPath string) string {
 	return d.prefix + relPath
 }
 
-// Connect is a no-op for OSS destinations (client is initialized in constructor).
-func (d *Destination) Connect(ctx context.Context) error { return nil }
-
-// Close is a no-op for OSS destinations.
-func (d *Destination) Close(ctx context.Context) error { return nil }
-
 // BeginTask is a no-op for OSS destinations.
 func (d *Destination) BeginTask(ctx context.Context, taskID string) error { return nil }
 
