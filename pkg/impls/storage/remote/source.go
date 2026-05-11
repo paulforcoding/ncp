@@ -15,8 +15,8 @@ import (
 
 // Source implements storage.Source for remote ncp servers.
 type Source struct {
-	addr     string // server address (host:port)
-	basePath string // URL path (e.g. "/data/backup")
+	addr     string         // server address (host:port)
+	basePath string         // URL path (e.g. "/data/backup")
 	conn     *protocol.Conn // instance-level single connection
 }
 
