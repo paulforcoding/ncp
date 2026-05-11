@@ -143,7 +143,7 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 					j.sendFactoryError(id, discoverCh, resultCh, err)
 					return
 				}
-				defer src.EndTask(ctx, storage.TaskSummary{})
+				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
 			}
 
 			dst := j.dst

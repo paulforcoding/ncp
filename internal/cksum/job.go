@@ -137,7 +137,7 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 				if err := src.BeginTask(ctx, j.taskID); err != nil {
 					return
 				}
-				defer src.EndTask(ctx, storage.TaskSummary{})
+				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
 			}
 
 			dst := j.dst
@@ -150,7 +150,7 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 				if err := dst.BeginTask(ctx, j.taskID); err != nil {
 					return
 				}
-				defer dst.EndTask(ctx, storage.TaskSummary{})
+				defer func() { _ = dst.EndTask(ctx, storage.TaskSummary{}) }()
 			}
 
 			w := NewCksumWorker(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
