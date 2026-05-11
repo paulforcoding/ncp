@@ -1,7 +1,7 @@
 package copy
 
 import (
-	"os"
+	"context"
 	"path/filepath"
 
 	"github.com/zp001/ncp/pkg/interfaces/progress"
@@ -13,7 +13,7 @@ import (
 // DB does not store fileType, so we stat the source to identify directories.
 // Iterates DB in reverse order (deep→shallow) because writing files into
 // a directory updates its mtime — must set parent dirs after children.
-func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase string) error {
+func EnsureDirMtime(ctx context.Context, store progress.ProgressStore, src storage.Source, dstBase string) error {
 	it, err := store.Iter()
 	if err != nil {
 		return err
@@ -31,9 +31,8 @@ func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase st
 		if cs != model.CopyDone {
 			continue
 		}
-		srcPath := filepath.Join(src.Base(), key)
-		info, err := os.Stat(srcPath)
-		if err != nil || !info.IsDir() {
+		item, err := src.Stat(ctx, key)
+		if err != nil || item.FileType != model.FileDir {
 			continue
 		}
 		dirs = append(dirs, key)
@@ -42,12 +41,12 @@ func EnsureDirMtime(store progress.ProgressStore, src storage.Source, dstBase st
 	// Apply in reverse order (deep→shallow)
 	for i := len(dirs) - 1; i >= 0; i-- {
 		relPath := dirs[i]
-		srcInfo, err := os.Stat(filepath.Join(src.Base(), relPath))
+		item, err := src.Stat(ctx, relPath)
 		if err != nil {
 			continue
 		}
 		dstPath := filepath.Join(dstBase, relPath)
-		_ = setFileMtime(dstPath, srcInfo.ModTime())
+		_ = setFileMtime(dstPath, item.Attr.Mtime)
 	}
 
 	return nil

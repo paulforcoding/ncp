@@ -16,6 +16,7 @@ import (
 type Job struct {
 	src            storage.Source
 	dst            storage.Destination
+	srcFactory     func(id int) (storage.Source, error)
 	dstFactory     func(id int) (storage.Destination, error)
 	dstBase        string
 	store          progress.ProgressStore
@@ -64,13 +65,16 @@ func WithEnsureDirMtime(v bool) JobOption               { return func(j *Job) { 
 func WithResume(v bool) JobOption                       { return func(j *Job) { j.resume = v } }
 func WithSkipByMtime(v bool) JobOption                  { return func(j *Job) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
+func WithSrcFactory(f func(id int) (storage.Source, error)) JobOption {
+	return func(j *Job) { j.srcFactory = f }
+}
 func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 	return func(j *Job) { j.dstFactory = f }
 }
 
 // Run executes the copy job and blocks until completion.
 func (j *Job) Run(ctx context.Context) (int, error) {
-	discoverCh := make(chan model.DiscoverItem, j.channelBuf)
+	discoverCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
@@ -96,17 +100,17 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 
 	dbWg.Wait()
 
-	return j.finalize(walker, dbWriter, walkErr)
+	return j.finalize(ctx, walker, dbWriter, walkErr)
 }
 
-func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- model.DiscoverItem) error {
+func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh chan<- storage.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
 		return fmt.Errorf("check walk_complete: %w", err)
 	}
 
 	if hasWalkComplete {
-		walker.ResumeFromDB(discoverCh)
+		walker.ResumeFromDB(ctx, discoverCh)
 		return nil
 	}
 
@@ -120,35 +124,60 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 	return freshWalker.Run(ctx, discoverCh)
 }
 
-func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+
+			src := j.src
+			if j.srcFactory != nil {
+				var err error
+				src, err = j.srcFactory(id)
+				if err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				if err := src.BeginTask(ctx, j.taskID); err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
+			}
+
 			dst := j.dst
 			if j.dstFactory != nil {
 				var err error
 				dst, err = j.dstFactory(id)
 				if err != nil {
-					for item := range discoverCh {
-						resultCh <- model.FileResult{
-							RelPath:    item.RelPath,
-							FileType:   item.FileType,
-							FileSize:   item.FileSize,
-							CopyStatus: model.CopyError,
-							Algorithm:  string(j.cksumAlgo),
-							Err:        fmt.Errorf("create destination for replicator %d: %w", id, err),
-						}
-					}
+					j.sendFactoryError(id, discoverCh, resultCh, err)
+					return
+				}
+				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					j.sendFactoryError(id, discoverCh, resultCh, err)
 					return
 				}
 			}
-			r := NewReplicator(id, j.src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
+
+			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
 			r.Run(ctx, discoverCh, resultCh)
 		}(i)
 	}
 	return &wg
+}
+
+func (j *Job) sendFactoryError(id int, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult, err error) {
+	for item := range discoverCh {
+		resultCh <- model.FileResult{
+			RelPath:    item.RelPath,
+			FileType:   item.FileType,
+			FileSize:   item.Size,
+			CopyStatus: model.CopyError,
+			Algorithm:  string(j.cksumAlgo),
+			Err:        fmt.Errorf("destination setup for replicator %d: %w", id, err),
+		}
+	}
 }
 
 func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult) *sync.WaitGroup {
@@ -161,7 +190,7 @@ func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult
 	return &wg
 }
 
-func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
+func (j *Job) finalize(ctx context.Context, walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
 	done, failed, total := dbWriter.Stats()
 
 	exitCode := 0
@@ -177,7 +206,7 @@ func (j *Job) finalize(walker *Walker, dbWriter *DBWriter, walkErr error) (int, 
 
 	// EnsureDirMtime
 	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
-		if err := EnsureDirMtime(j.store, j.src, j.dstBase); err != nil {
+		if err := EnsureDirMtime(ctx, j.store, j.src, j.dstBase); err != nil {
 			slog.Warn("ensure dir mtime failed", "error", err)
 		}
 	}

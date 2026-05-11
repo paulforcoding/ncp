@@ -2,10 +2,13 @@ package obs
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -59,7 +62,7 @@ func NewSource(cfg SourceConfig) (*Source, error) {
 
 // Walk traverses all objects under prefix using ListObjects with Marker pagination.
 // Keys are returned in lexicographic order.
-func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
+func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
 	var marker string
 	for {
 		out, err := s.client.ListObjects(&obs.ListObjectsInput{
@@ -89,7 +92,7 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 				continue
 			}
 
-			if err := fn(item); err != nil {
+			if err := fn(ctx, item); err != nil {
 				return err
 			}
 
@@ -115,29 +118,42 @@ func (s *Source) Walk(ctx context.Context, fn func(model.DiscoverItem) error) er
 	return nil
 }
 
-// Open opens an OBS object for reading with Range support (ReadAt semantics).
-func (s *Source) Open(relPath string) (storage.Reader, error) {
+// Open opens an OBS object for streaming read.
+func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
 	key := s.prefix + relPath
 
-	md, err := s.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
-		Bucket: s.bucket,
-		Key:    key,
+	out, err := s.client.GetObject(&obs.GetObjectInput{
+		GetObjectMetadataInput: obs.GetObjectMetadataInput{
+			Bucket: s.bucket,
+			Key:    key,
+		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("obs head %s: %w", relPath, err)
+		return nil, fmt.Errorf("obs get %s: %w", relPath, err)
+	}
+
+	attr := storage.FileAttr{}
+	if out.Metadata != nil {
+		attr.Mode = parseMode(out.Metadata[metaMode])
+		attr.Uid = parseInt(out.Metadata[metaUID])
+		attr.Gid = parseInt(out.Metadata[metaGID])
+		if mtime := parseInt64(out.Metadata[metaMtime]); mtime != 0 {
+			attr.Mtime = time.Unix(0, mtime)
+		}
+	}
+	if attr.Mode == 0 {
+		attr.Mode = 0o644
 	}
 
 	return &Reader{
-		client:   s.client,
-		bucket:   s.bucket,
-		key:      key,
-		size:     md.ContentLength,
-		metadata: md.Metadata,
+		body: out.Body,
+		size: out.ContentLength,
+		attr: attr,
 	}, nil
 }
 
-// Restat rebuilds a DiscoverItem by heading the object.
-func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
+// Stat rebuilds a DiscoverItem by heading the object.
+func (s *Source) Stat(_ context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := s.prefix + relPath
 
 	md, err := s.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
@@ -151,7 +167,7 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 			Key:    dirKey,
 		})
 		if err2 != nil {
-			return model.DiscoverItem{}, fmt.Errorf("obs restat %s: %w", relPath, err)
+			return storage.DiscoverItem{}, fmt.Errorf("obs stat %s: %w", relPath, err)
 		}
 		md = md2
 		key = dirKey
@@ -170,28 +186,29 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 		ft = model.FileRegular
 	}
 
-	item := model.DiscoverItem{
-		SrcBase:  s.Base(),
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: ft,
-		FileSize: md.ContentLength,
-		ETag:     strings.ToLower(strings.Trim(md.ETag, `"`)),
+		Size:     md.ContentLength,
 	}
+	item.Checksum, item.Algorithm = parseETag(md.ETag)
 
 	if md.Metadata != nil {
-		item.Mode = parseMode(md.Metadata[metaMode])
-		item.Uid = parseInt(md.Metadata[metaUID])
-		item.Gid = parseInt(md.Metadata[metaGID])
-		item.Mtime = parseInt64(md.Metadata[metaMtime])
+		item.Attr.Mode = parseMode(md.Metadata[metaMode])
+		item.Attr.Uid = parseInt(md.Metadata[metaUID])
+		item.Attr.Gid = parseInt(md.Metadata[metaGID])
+		if mtime := parseInt64(md.Metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if ft == model.FileSymlink {
-			item.LinkTarget = md.Metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = md.Metadata[metaSymlinkTarget]
 		}
 	}
-	if item.Mode == 0 {
+	if item.Attr.Mode == 0 {
 		if isDir {
-			item.Mode = 0o755
+			item.Attr.Mode = 0o755
 		} else {
-			item.Mode = 0o644
+			item.Attr.Mode = 0o644
 		}
 	}
 
@@ -199,19 +216,24 @@ func (s *Source) Restat(relPath string) (model.DiscoverItem, error) {
 }
 
 // Base returns the source base URI.
-func (s *Source) Base() string {
+func (s *Source) URI() string {
 	return "obs://" + s.bucket + "/" + s.prefix
 }
 
-func (s *Source) objectToItem(key, relPath string, size int64, etag string) (model.DiscoverItem, error) {
+// BeginTask is a no-op for OBS sources.
+func (s *Source) BeginTask(ctx context.Context, taskID string) error { return nil }
+
+// EndTask is a no-op for OBS sources.
+func (s *Source) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+func (s *Source) objectToItem(key, relPath string, size int64, etag string) (storage.DiscoverItem, error) {
 	isDir := strings.HasSuffix(key, "/")
 
 	if isDir {
-		item := model.DiscoverItem{
-			SrcBase:  s.Base(),
+		item := storage.DiscoverItem{
 			RelPath:  strings.TrimSuffix(relPath, "/"),
 			FileType: model.FileDir,
-			FileSize: 0,
+			Size:     0,
 		}
 
 		md, err := s.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
@@ -219,41 +241,44 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 			Key:    key,
 		})
 		if err == nil && md.Metadata != nil {
-			item.Mode = parseMode(md.Metadata[metaMode])
-			item.Uid = parseInt(md.Metadata[metaUID])
-			item.Gid = parseInt(md.Metadata[metaGID])
-			item.Mtime = parseInt64(md.Metadata[metaMtime])
+			item.Attr.Mode = parseMode(md.Metadata[metaMode])
+			item.Attr.Uid = parseInt(md.Metadata[metaUID])
+			item.Attr.Gid = parseInt(md.Metadata[metaGID])
+			if mtime := parseInt64(md.Metadata[metaMtime]); mtime != 0 {
+				item.Attr.Mtime = time.Unix(0, mtime)
+			}
 		}
-		if item.Mode == 0 {
-			item.Mode = 0o755
+		if item.Attr.Mode == 0 {
+			item.Attr.Mode = 0o755
 		}
 		return item, nil
 	}
 
-	item := model.DiscoverItem{
-		SrcBase:  s.Base(),
+	item := storage.DiscoverItem{
 		RelPath:  relPath,
 		FileType: model.FileRegular,
-		FileSize: size,
-		ETag:     strings.ToLower(strings.Trim(etag, `"`)),
+		Size:     size,
 	}
+	item.Checksum, item.Algorithm = parseETag(etag)
 
 	md, err := s.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
 		Bucket: s.bucket,
 		Key:    key,
 	})
 	if err == nil && md.Metadata != nil {
-		item.Mode = parseMode(md.Metadata[metaMode])
-		item.Uid = parseInt(md.Metadata[metaUID])
-		item.Gid = parseInt(md.Metadata[metaGID])
-		item.Mtime = parseInt64(md.Metadata[metaMtime])
+		item.Attr.Mode = parseMode(md.Metadata[metaMode])
+		item.Attr.Uid = parseInt(md.Metadata[metaUID])
+		item.Attr.Gid = parseInt(md.Metadata[metaGID])
+		if mtime := parseInt64(md.Metadata[metaMtime]); mtime != 0 {
+			item.Attr.Mtime = time.Unix(0, mtime)
+		}
 		if md.Metadata[metaSymlinkTarget] != "" {
 			item.FileType = model.FileSymlink
-			item.LinkTarget = md.Metadata[metaSymlinkTarget]
+			item.Attr.SymlinkTarget = md.Metadata[metaSymlinkTarget]
 		}
 	}
-	if item.Mode == 0 {
-		item.Mode = 0o644
+	if item.Attr.Mode == 0 {
+		item.Attr.Mode = 0o644
 	}
 
 	return item, nil
@@ -261,58 +286,47 @@ func (s *Source) objectToItem(key, relPath string, size int64, etag string) (mod
 
 // --- Reader ---
 
-// Reader implements storage.Reader for OBS objects using HTTP Range requests.
+// Reader implements storage.FileReader for OBS objects using a streaming GetObject body.
 type Reader struct {
-	client   *obs.ObsClient
-	bucket   string
-	key      string
-	size     int64
-	metadata map[string]string
+	body io.ReadCloser
+	size int64
+	attr storage.FileAttr
 }
 
-var _ storage.Reader = (*Reader)(nil)
+var _ storage.FileReader = (*Reader)(nil)
 
-// ReadAt reads len(p) bytes from the object starting at byte offset off.
-func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
-	if off >= r.size {
-		return 0, io.EOF
-	}
-
-	end := off + int64(len(p)) - 1
-	if end >= r.size {
-		end = r.size - 1
-	}
-
-	out, err := r.client.GetObject(&obs.GetObjectInput{
-		GetObjectMetadataInput: obs.GetObjectMetadataInput{
-			Bucket: r.bucket,
-			Key:    r.key,
-		},
-		RangeStart: off,
-		RangeEnd:   end,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("obs get range %s [%d-%d]: %w", r.key, off, end, err)
-	}
-	defer out.Body.Close()
-
-	n, err := io.ReadFull(out.Body, p)
-	if err == io.ErrUnexpectedEOF {
-		return n, nil
-	}
-	if err == io.EOF && n == 0 {
-		return 0, io.EOF
-	}
-	return n, err
+// Read reads up to len(p) bytes from the object body.
+func (r *Reader) Read(ctx context.Context, p []byte) (int, error) {
+	return r.body.Read(p)
 }
 
-// Close is a no-op for OBS Reader.
-func (r *Reader) Close() error { return nil }
+// Close closes the underlying object body.
+func (r *Reader) Close(ctx context.Context) error {
+	return r.body.Close()
+}
 
-// Metadata returns the object's custom metadata headers.
-func (r *Reader) Metadata() map[string]string { return r.metadata }
+// Size returns the object content length.
+func (r *Reader) Size() int64 { return r.size }
+
+// Attr returns the object metadata.
+func (r *Reader) Attr() storage.FileAttr { return r.attr }
 
 // --- Helpers ---
+
+// parseETag converts an OBS ETag string into (checksum []byte, algorithm string).
+func parseETag(etag string) ([]byte, string) {
+	etag = strings.ToLower(strings.Trim(etag, `"`))
+	if etag == "" {
+		return nil, ""
+	}
+	if strings.Contains(etag, "-") {
+		return []byte(etag), "etag-multipart"
+	}
+	if b, err := hex.DecodeString(etag); err == nil {
+		return b, "etag-md5"
+	}
+	return []byte(etag), "etag-multipart"
+}
 
 // newOBSClient builds an ObsClient. Endpoint is required; if empty,
 // fall back to the standard obs.<region>.myhuaweicloud.com pattern.
@@ -330,7 +344,7 @@ func newOBSClient(ak, sk, endpoint, region string) (*obs.ObsClient, error) {
 	return cli, nil
 }
 
-func parseMode(s string) uint32 {
+func parseMode(s string) os.FileMode {
 	if s == "" {
 		return 0
 	}
@@ -338,7 +352,7 @@ func parseMode(s string) uint32 {
 	if err != nil {
 		return 0
 	}
-	return uint32(m)
+	return os.FileMode(m)
 }
 
 func parseInt(s string) int {

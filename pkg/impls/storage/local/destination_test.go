@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zp001/ncp/pkg/model"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 )
 
 func TestDestinationMkdir(t *testing.T) {
@@ -19,7 +19,7 @@ func TestDestinationMkdir(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	st, err := os.Stat(filepath.Join(dst.Base(), "a", "b", "c"))
+	st, err := os.Stat(filepath.Join(dst.URI(), "a", "b", "c"))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestDestinationMkdir(t *testing.T) {
 	}
 }
 
-func TestDestinationOpenFileWriteAt(t *testing.T) {
+func TestDestinationOpenFileWrite(t *testing.T) {
 	dst, err := NewDestination(t.TempDir())
 	if err != nil {
 		t.Fatalf("new destination: %v", err)
@@ -39,20 +39,19 @@ func TestDestinationOpenFileWriteAt(t *testing.T) {
 		t.Fatalf("openfile: %v", err)
 	}
 
-	n, err := w.WriteAt([]byte("hello"), 0)
+	n, err := w.Write(context.Background(), []byte("hello"))
 	if err != nil {
-		t.Fatalf("writeat: %v", err)
+		t.Fatalf("write: %v", err)
 	}
 	if n != 5 {
 		t.Fatalf("expected 5 bytes written, got %d", n)
 	}
 
-	// Close with nil checksum (local copy ignores it)
-	if err := w.Close(context.Background(), nil); err != nil {
-		t.Fatalf("close: %v", err)
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dst.Base(), "dir", "file.txt"))
+	data, err := os.ReadFile(filepath.Join(dst.URI(), "dir", "file.txt"))
 	if err != nil {
 		t.Fatalf("readfile: %v", err)
 	}
@@ -68,7 +67,7 @@ func TestDestinationSymlink(t *testing.T) {
 	}
 
 	// Create target first
-	if err := os.WriteFile(filepath.Join(dst.Base(), "target.txt"), []byte("data"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst.URI(), "target.txt"), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write target: %v", err)
 	}
 
@@ -76,7 +75,7 @@ func TestDestinationSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	target, err := os.Readlink(filepath.Join(dst.Base(), "link"))
+	target, err := os.Readlink(filepath.Join(dst.URI(), "link"))
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
@@ -96,19 +95,19 @@ func TestDestinationSetMetadataChmod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openfile: %v", err)
 	}
-	if _, err := w.WriteAt([]byte("x"), 0); err != nil {
-		t.Fatalf("writeat: %v", err)
+	if _, err := w.Write(context.Background(), []byte("x")); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	if err := w.Close(context.Background(), nil); err != nil {
-		t.Fatalf("close: %v", err)
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
-	meta := model.FileMetadata{Mode: 0o755}
+	meta := storage.FileAttr{Mode: 0o755}
 	if err := dst.SetMetadata(context.Background(), "meta.txt", meta); err != nil {
 		t.Fatalf("set metadata: %v", err)
 	}
 
-	st, err := os.Stat(filepath.Join(dst.Base(), "meta.txt"))
+	st, err := os.Stat(filepath.Join(dst.URI(), "meta.txt"))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -128,34 +127,69 @@ func TestDestinationAutoMkdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openfile with nested dirs: %v", err)
 	}
-	if err := w.Close(context.Background(), nil); err != nil {
-		t.Fatalf("close: %v", err)
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dst.Base(), "deep", "nested", "dir")); err != nil {
+	if _, err := os.Stat(filepath.Join(dst.URI(), "deep", "nested", "dir")); err != nil {
 		t.Fatalf("parent dir should exist: %v", err)
 	}
 }
 
-func TestWriterSync(t *testing.T) {
+func TestWriterAbortRemovesFile(t *testing.T) {
 	dst, err := NewDestination(t.TempDir())
 	if err != nil {
 		t.Fatalf("new destination: %v", err)
 	}
 
-	w, err := dst.OpenFile(context.Background(), "sync.txt", 0, 0o644, 0, 0)
+	w, err := dst.OpenFile(context.Background(), "abort.txt", 5, 0o644, 0, 0)
 	if err != nil {
 		t.Fatalf("openfile: %v", err)
 	}
-	if _, err := w.WriteAt([]byte("data"), 0); err != nil {
-		t.Fatalf("writeat: %v", err)
+	if _, err := w.Write(context.Background(), []byte("hel")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := w.Abort(context.Background()); err != nil {
+		t.Fatalf("abort: %v", err)
 	}
 
-	if err := w.Sync(); err != nil {
-		t.Fatalf("sync: %v", err)
+	if _, err := os.Stat(filepath.Join(dst.URI(), "abort.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected file to be removed after abort, got err=%v", err)
+	}
+}
+
+func TestWriterDoubleCommitIsNoop(t *testing.T) {
+	dst, err := NewDestination(t.TempDir())
+	if err != nil {
+		t.Fatalf("new destination: %v", err)
 	}
 
-	if err := w.Close(context.Background(), nil); err != nil {
-		t.Fatalf("close: %v", err)
+	w, err := dst.OpenFile(context.Background(), "double.txt", 0, 0o644, 0, 0)
+	if err != nil {
+		t.Fatalf("openfile: %v", err)
+	}
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("second commit should be no-op: %v", err)
+	}
+}
+
+func TestWriterCommitAfterAbortIsNoop(t *testing.T) {
+	dst, err := NewDestination(t.TempDir())
+	if err != nil {
+		t.Fatalf("new destination: %v", err)
+	}
+
+	w, err := dst.OpenFile(context.Background(), "noabort.txt", 0, 0o644, 0, 0)
+	if err != nil {
+		t.Fatalf("openfile: %v", err)
+	}
+	if err := w.Abort(context.Background()); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if err := w.Commit(context.Background(), nil); err != nil {
+		t.Fatalf("commit after abort should be no-op: %v", err)
 	}
 }

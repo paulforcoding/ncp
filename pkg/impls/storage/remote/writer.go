@@ -8,20 +8,26 @@ import (
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 )
 
-// Writer implements storage.Writer for remote files via the ncp protocol.
+// Writer implements storage.FileWriter for remote files via the ncp protocol.
 type Writer struct {
-	conn   *protocol.Conn
-	fd     uint32
-	closed bool
+	conn         *protocol.Conn
+	fd           uint32
+	bytesWritten int64
+	committed    bool
+	aborted      bool
 }
 
-var _ storage.Writer = (*Writer)(nil)
+var _ storage.FileWriter = (*Writer)(nil)
 
-// WriteAt sends MsgPwrite to the server and returns the number of bytes written.
-func (w *Writer) WriteAt(p []byte, offset int64) (int, error) {
+// Write sends MsgPwrite to the server and returns the number of bytes written.
+func (w *Writer) Write(_ context.Context, p []byte) (int, error) {
+	if w.committed || w.aborted {
+		return 0, fmt.Errorf("remote: write on closed writer")
+	}
+
 	msg := &protocol.PwriteMsg{
 		FD:     w.fd,
-		Offset: offset,
+		Offset: w.bytesWritten,
 		Data:   p,
 	}
 	ack, err := w.conn.SendMsgRecvAck(protocol.MsgPwrite, msg.Encode())
@@ -29,27 +35,16 @@ func (w *Writer) WriteAt(p []byte, offset int64) (int, error) {
 		return 0, fmt.Errorf("remote pwrite: %w", err)
 	}
 	_, n := protocol.DecodeAckU32(ack.Data)
+	w.bytesWritten += int64(n)
 	return int(n), nil
 }
 
-// Sync sends MsgFsync to the server.
-func (w *Writer) Sync() error {
-	msg := &protocol.FsyncMsg{FD: w.fd}
-	_, err := w.conn.SendMsgRecvAck(protocol.MsgFsync, msg.Encode())
-	if err != nil {
-		return fmt.Errorf("remote fsync: %w", err)
-	}
-	return nil
-}
-
-// Close sends MsgClose with the client checksum to the server.
-// The server compares its own MD5 with the client checksum.
-// Does NOT close the underlying conn — the Destination owns it.
-func (w *Writer) Close(_ context.Context, checksum []byte) error {
-	if w.closed {
+// Commit sends MsgClose with the client checksum to the server.
+func (w *Writer) Commit(_ context.Context, checksum []byte) error {
+	if w.committed || w.aborted {
 		return nil
 	}
-	w.closed = true
+	w.committed = true
 
 	msg := &protocol.CloseMsg{
 		FD:       w.fd,
@@ -57,7 +52,25 @@ func (w *Writer) Close(_ context.Context, checksum []byte) error {
 	}
 	_, err := w.conn.SendMsgRecvAck(protocol.MsgClose, msg.Encode())
 	if err != nil {
-		return fmt.Errorf("remote close: %w", err)
+		return fmt.Errorf("remote commit: %w", err)
 	}
 	return nil
 }
+
+// Abort sends MsgAbortFile to the server.
+func (w *Writer) Abort(_ context.Context) error {
+	if w.committed || w.aborted {
+		return nil
+	}
+	w.aborted = true
+
+	msg := &protocol.AbortFileMsg{FD: w.fd}
+	_, err := w.conn.SendMsgRecvAck(protocol.MsgAbortFile, msg.Encode())
+	if err != nil {
+		return fmt.Errorf("remote abort: %w", err)
+	}
+	return nil
+}
+
+// BytesWritten returns the number of bytes written so far.
+func (w *Writer) BytesWritten() int64 { return w.bytesWritten }

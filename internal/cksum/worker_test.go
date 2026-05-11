@@ -1,18 +1,20 @@
 package cksum
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
 func TestCksumWorkerUnknownFileType(t *testing.T) {
 	w := NewCksumWorker(0, nil, nil, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{FileType: model.FileType(255), RelPath: "unknown"})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{FileType: model.FileType(255), RelPath: "unknown"})
 	if result.CksumStatus != model.CksumError {
 		t.Errorf("expected CksumError for unknown type, got %v", result.CksumStatus)
 	}
@@ -33,7 +35,7 @@ func TestCksumWorkerCksumDirPass(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "subdir", FileType: model.FileDir})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "subdir", FileType: model.FileDir})
 
 	if result.CksumStatus != model.CksumPass {
 		t.Errorf("expected CksumPass for dir, got %v", result.CksumStatus)
@@ -55,7 +57,7 @@ func TestCksumWorkerCksumDirMismatch(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "subdir", FileType: model.FileDir})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "subdir", FileType: model.FileDir})
 
 	if result.CksumStatus != model.CksumMismatch {
 		t.Errorf("expected CksumMismatch when dst is not dir, got %v", result.CksumStatus)
@@ -77,7 +79,7 @@ func TestCksumWorkerCksumSymlinkPass(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, LinkTarget: "target.txt"})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "target.txt"}})
 
 	if result.CksumStatus != model.CksumPass {
 		t.Errorf("expected CksumPass for symlink, got %v", result.CksumStatus)
@@ -99,7 +101,7 @@ func TestCksumWorkerCksumSymlinkMismatch(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, LinkTarget: "target-a.txt"})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "target-a.txt"}})
 
 	if result.CksumStatus != model.CksumMismatch {
 		t.Errorf("expected CksumMismatch for different symlink target, got %v", result.CksumStatus)
@@ -121,7 +123,7 @@ func TestCksumWorkerCksumFilePass(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: 12})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 12})
 
 	if result.CksumStatus != model.CksumPass {
 		t.Errorf("expected CksumPass for identical file, got %v: %v", result.CksumStatus, result.Err)
@@ -149,7 +151,7 @@ func TestCksumWorkerCksumFileMismatch(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: 9})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 9})
 
 	if result.CksumStatus != model.CksumMismatch {
 		t.Errorf("expected CksumMismatch for different content, got %v", result.CksumStatus)
@@ -171,7 +173,7 @@ func TestCksumWorkerCksumFileSrcMissing(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, false)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: 7})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 7})
 
 	if result.CksumStatus != model.CksumError {
 		t.Errorf("expected CksumError for missing src file, got %v", result.CksumStatus)
@@ -204,7 +206,7 @@ func TestCksumWorkerSkipByMtime(t *testing.T) {
 	dst, _ := local.NewSource(dstDir)
 
 	w := NewCksumWorker(0, src, dst, nil, 0, model.CksumMD5, true)
-	result := w.cksumOne(model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: 7, Mtime: now.UnixNano()})
+	result := w.cksumOne(context.Background(), storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 7, Attr: storage.FileAttr{Mtime: now}})
 
 	if result.CksumStatus != model.CksumPass {
 		t.Errorf("expected CksumPass when skip-by-mtime matches, got %v", result.CksumStatus)

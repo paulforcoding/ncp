@@ -345,7 +345,12 @@ make lint           # golangci-lint
 - **并发安全**：共享状态通过 channel 传递，DB 操作集中在 DBWriter goroutine。
 - **资源释放**：所有 `io.Closer` 使用 `defer` 释放，Pebble store 必须 `Close()`。
 - **平台兼容**：OS-specific 代码使用 `_unix.go` / `_windows.go` / `_darwin.go` / `_linux.go` 后缀。
-- **禁止直接打印**：除 `--help` 和命令行参数错误外，禁止任何直接输出到 stderr/stdout。所有日志必须通过 ProgramLog（内部诊断）或 FileLog（外部通告）输出。
+- **禁止直接打印**：除以下情况外，禁止任何直接输出到 stderr/stdout：
+  1. `--help` 输出
+  2. 命令行参数错误
+  3. **查询命令的查询结果**（`task list`/`task show`/`task delete`、`config show`、`--dry-run` 等）：查询结果是 CLI 协议契约的一部分，以单行 JSON 写入 stdout，供脚本/Agent 消费。
+
+  所有日志（诊断、进度）必须通过 ProgramLog（内部诊断）或 FileLog（外部通告）输出，不得使用 `fmt.Println`/`fmt.Printf`。
 
 ---
 
@@ -377,4 +382,4 @@ make lint           # golangci-lint
 5. **Resume 时 channelBuf 不可变**：resume 依赖 DB replay，channel buffer 大小在首次运行时固定。
 6. **任务并发锁**：同一 taskID 不允许并发运行，通过文件锁保护（`task/lock_unix.go`）。
 7. **远程协议无加密**：`ncp serve` 当前为明文传输，仅限可信网络使用。
-8. **禁止直接打印到 stderr/stdout**：除 `--help` 和参数错误外，任何 `fmt.Println`、`fmt.Fprintf(os.Stderr, ...)` 都是违规。应使用 ProgramLog（内部）或 FileLog（外部）。
+8. **禁止直接打印到 stderr/stdout**：除 `--help`、参数错误、**查询命令的查询结果**（如 `task list/show/delete`、`config show`、`--dry-run`）外，任何 `fmt.Println`、`fmt.Fprintf(os.Stderr, ...)` 都是违规。应使用 ProgramLog（内部）或 FileLog（外部）。查询结果属于 CLI 协议契约，以单行 JSON 写入 stdout 供脚本/Agent 消费。

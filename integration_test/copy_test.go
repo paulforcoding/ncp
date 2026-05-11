@@ -392,7 +392,7 @@ type failAfterN struct {
 	failAt int
 }
 
-func (d *failAfterN) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.Writer, error) {
+func (d *failAfterN) OpenFile(ctx context.Context, relPath string, size int64, mode os.FileMode, uid, gid int) (storage.FileWriter, error) {
 	d.mu.Lock()
 	d.count++
 	if d.count > d.failAt {
@@ -412,15 +412,15 @@ type cancelAfterWalkSource struct {
 	cancel context.CancelFunc
 }
 
-func (s *cancelAfterWalkSource) Walk(ctx context.Context, fn func(model.DiscoverItem) error) error {
-	return s.Source.Walk(ctx, func(item model.DiscoverItem) error {
+func (s *cancelAfterWalkSource) Walk(ctx context.Context, fn func(context.Context, storage.DiscoverItem) error) error {
+	return s.Source.Walk(ctx, func(_ context.Context, item storage.DiscoverItem) error {
 		s.mu.Lock()
 		s.count++
 		if s.count >= s.limit {
 			s.cancel()
 		}
 		s.mu.Unlock()
-		return fn(item)
+		return fn(ctx, item)
 	})
 }
 

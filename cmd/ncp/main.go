@@ -104,6 +104,7 @@ func main() {
 	resumeCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	resumeCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
 	resumeCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 
@@ -141,7 +142,7 @@ func main() {
 	}
 	taskDeleteCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
 
-	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd, newTaskMigrateCmd())
+	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
 
 	// serve command
 	serveCmd := &cobra.Command{
@@ -172,9 +173,10 @@ func main() {
 	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
+	cksumCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newProfileCmd())
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -200,11 +202,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --dry-run: print effective config as JSON and exit
+	// --dry-run: print effective config and exit
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		out, _ := json.MarshalIndent(cfg, "", "  ")
-		fmt.Println(string(out))
-		return nil
+		return handleDryRun(cmd, cfg, args)
 	}
 
 	// --task flag: resume existing task
@@ -257,6 +257,18 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	// Source lifecycle
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return fmt.Errorf("begin task on source: %w", err)
+	}
+
+	// Destination lifecycle (non-factory)
+	if dst != nil {
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -273,6 +285,11 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	job := copy.NewJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
+
+	_ = src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	// Update meta.json
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
@@ -322,6 +339,15 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	}
 	defer store.Close()
 
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return fmt.Errorf("begin task on source: %w", err)
+	}
+	if dst != nil {
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -340,6 +366,11 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 	exitCode, err := job.Run(ctx)
 
+	_ = src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
+	}
+
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
@@ -349,11 +380,59 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	return nil
 }
 
+// handleDryRun prints the effective configuration for copy/cksum/resume --dry-run.
+// For copy, it handles both --task resume and fresh copy paths.
+func handleDryRun(cmd *cobra.Command, cfg *config.Config, args []string) error {
+	taskID, _ := cmd.Flags().GetString("task")
+	var urls []string
+	if taskID != "" {
+		meta, err := task.ReadMeta(cfg.ProgressStorePath, taskID)
+		if err != nil {
+			return fmt.Errorf("read task meta: %w", err)
+		}
+		urls = strings.Split(meta.SrcBase, ",")
+		urls = append(urls, meta.DstBase)
+	} else {
+		if len(args) < 2 {
+			return fmt.Errorf("dry-run requires <src> and <dst> arguments when not using --task")
+		}
+		urls = append([]string(nil), args[:len(args)-1]...)
+		urls = append(urls, args[len(args)-1])
+	}
+	usedProfiles, err := config.ExtractUsedProfiles(urls, cfg.Profiles)
+	if err != nil {
+		return err
+	}
+	fmt.Print(config.FormatConfig(cfg, usedProfiles))
+	return nil
+}
+
 // runResume handles `ncp resume <taskID>` — determines jobType from last run.
 func runResume(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 	taskID := args[0]
 	progressDir, _ := cmd.Flags().GetString("ProgressStorePath")
+
+	cfg, err := loadResumeConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	// --dry-run: print effective config and exit
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		meta, err := task.ReadMeta(progressDir, taskID)
+		if err != nil {
+			return fmt.Errorf("read task meta: %w", err)
+		}
+		urls := strings.Split(meta.SrcBase, ",")
+		urls = append(urls, meta.DstBase)
+		usedProfiles, err := config.ExtractUsedProfiles(urls, cfg.Profiles)
+		if err != nil {
+			return err
+		}
+		fmt.Print(config.FormatConfig(cfg, usedProfiles))
+		return nil
+	}
 
 	// Check concurrency
 	meta, lock, err := task.CheckTaskNotRunning(progressDir, taskID)
@@ -365,11 +444,6 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	jobType := task.LastJobType(meta)
-
-	cfg, err := loadResumeConfig(cmd)
-	if err != nil {
-		return err
-	}
 
 	if err := filelog.SetupProgramLog(cfg.ProgramLogOutput, cfg.ProgramLogLevel); err != nil {
 		return fmt.Errorf("setup program log: %w", err)
@@ -416,6 +490,15 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	}
 	defer store.Close()
 
+	if err := src.BeginTask(ctx, taskID); err != nil {
+		return 1, fmt.Errorf("begin task on source: %w", err)
+	}
+	if dst != nil {
+		if err := dst.BeginTask(ctx, taskID); err != nil {
+			return 1, fmt.Errorf("begin task on destination: %w", err)
+		}
+	}
+
 	jobOpts := []copy.JobOption{
 		copy.WithParallelism(cfg.CopyParallelism),
 		copy.WithFileLog(fl, cfg.FileLogInterval),
@@ -431,17 +514,30 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 	jobOpts = append(jobOpts, extraOpts...)
 
 	job := copy.NewJob(src, dst, store, jobOpts...)
-	return job.Run(ctx)
+	exitCode, err := job.Run(ctx)
+
+	_ = src.EndTask(ctx, storage.TaskSummary{})
+	if dst != nil {
+		_ = dst.EndTask(ctx, storage.TaskSummary{})
+	}
+
+	return exitCode, err
 }
 
 func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
-	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return 1, err
 	}
 	defer store.Close()
 
-	job := cksum.NewCksumJob(src, dst, store,
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return 1, fmt.Errorf("begin task on source: %w", err)
+		}
+	}
+
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -450,8 +546,17 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
-	return job.Run(ctx)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
+	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		_ = s.EndTask(ctx, storage.TaskSummary{})
+	}
+
+	return exitCode, err
 }
 
 // runCksum is the Composition Root for the cksum command.
@@ -472,6 +577,19 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadFromViper(v)
 	if err != nil {
 		return err
+	}
+
+	// --dry-run: print effective config and exit
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		if len(args) < 2 {
+			return fmt.Errorf("cksum --dry-run requires <src> and <dst> arguments")
+		}
+		usedProfiles, err := config.ExtractUsedProfiles(args[:2], cfg.Profiles)
+		if err != nil {
+			return err
+		}
+		fmt.Print(config.FormatConfig(cfg, usedProfiles))
+		return nil
 	}
 
 	// --task flag: resume existing cksum task
@@ -517,13 +635,19 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	defer fl.Close()
 
 	// Dependency injection
-	src, dst, store, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	job := cksum.NewCksumJob(src, dst, store,
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on source: %w", err)
+		}
+	}
+
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -531,9 +655,16 @@ func runCksum(cmd *cobra.Command, args []string) error {
 		cksum.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		_ = s.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -573,13 +704,19 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	}
 	defer fl.Close()
 
-	src, dst, store, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	job := cksum.NewCksumJob(src, dst, store,
+	for _, s := range []storage.Source{src, dst} {
+		if err := s.BeginTask(ctx, taskID); err != nil {
+			return fmt.Errorf("begin task on source: %w", err)
+		}
+	}
+
+	jobOpts := []cksum.CksumJobOption{
 		cksum.WithCksumParallelism(cfg.CopyParallelism),
 		cksum.WithCksumFileLog(fl, cfg.FileLogInterval),
 		cksum.WithCksumIOSize(cfg.IOSize),
@@ -588,9 +725,16 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		cksum.WithCksumResume(true),
 		cksum.WithCksumSkipByMtime(cfg.SkipByMtime),
 		cksum.WithCksumChannelBuf(cfg.ChannelBuf),
-	)
+	}
+	jobOpts = append(jobOpts, extraOpts...)
+
+	job := cksum.NewCksumJob(src, dst, store, jobOpts...)
 
 	exitCode, err := job.Run(ctx)
+
+	for _, s := range []storage.Source{src, dst} {
+		_ = s.EndTask(ctx, storage.TaskSummary{})
+	}
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -603,24 +747,42 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 // setupCksumDeps creates src Source, dst Source, and opens the Pebble store.
 // Both src and dst are Sources (readable) for checksum comparison.
-func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, error) {
+func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, []cksum.CksumJobOption, error) {
+	var extraOpts []cksum.CksumJobOption
+
 	src, err := di.NewSource(srcPath, cfg.Profiles)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create source: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+	}
+
+	su, _ := di.ParsePath(srcPath)
+	if su.Scheme == "ncp" {
+		srcFactory := func(id int) (storage.Source, error) {
+			return di.NewSource(srcPath, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
 	}
 
 	dst, err := di.NewSource(dstPath, cfg.Profiles)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+	}
+
+	du, _ := di.ParsePath(dstPath)
+	if du.Scheme == "ncp" {
+		dstFactory := func(id int) (storage.Source, error) {
+			return di.NewSource(dstPath, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
 	}
 
 	dbDir := filepath.Join(progressDir, taskID, "db")
 	store, err := di.NewProgressStore(dbDir)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open progress store: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
 	}
 
-	return src, dst, store, nil
+	return src, dst, store, extraOpts, nil
 }
 
 // runServe handles `ncp serve` — starts the ncp protocol server.
@@ -790,6 +952,18 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
+		}
+	}
+
+	// Set srcFactory for remote sources
+	for _, sp := range srcPaths {
+		su, _ := di.ParsePath(sp)
+		if su.Scheme == "ncp" {
+			srcFactory := func(id int) (storage.Source, error) {
+				return di.NewSource(sp, cfg.Profiles)
+			}
+			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
+			break
 		}
 	}
 

@@ -2,12 +2,15 @@ package obs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 )
 
 // RetryConfig controls retry behavior for OBS operations.
@@ -30,6 +33,50 @@ func DefaultRetryConfig() RetryConfig {
 	}
 }
 
+// mapError converts SDK string errors into sentinel errors so that callers
+// can use errors.Is instead of string matching.
+func mapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, storage.ErrNotFound) ||
+		errors.Is(err, storage.ErrPermission) ||
+		errors.Is(err, storage.ErrAlreadyExists) ||
+		errors.Is(err, storage.ErrInvalidArgument) ||
+		errors.Is(err, storage.ErrChecksum) {
+		return err
+	}
+
+	errMsg := err.Error()
+
+	switch {
+	case strings.Contains(errMsg, "Status=404"),
+		strings.Contains(errMsg, "StatusCode:404"),
+		strings.Contains(errMsg, "NoSuchKey"),
+		strings.Contains(errMsg, "NoSuchBucket"):
+		return fmt.Errorf("%w: %s", storage.ErrNotFound, errMsg)
+	case strings.Contains(errMsg, "Status=403"),
+		strings.Contains(errMsg, "StatusCode:403"),
+		strings.Contains(errMsg, "AccessDenied"),
+		strings.Contains(errMsg, "SignatureDoesNotMatch"):
+		return fmt.Errorf("%w: %s", storage.ErrPermission, errMsg)
+	case strings.Contains(errMsg, "Status=409"),
+		strings.Contains(errMsg, "StatusCode:409"):
+		return fmt.Errorf("%w: %s", storage.ErrAlreadyExists, errMsg)
+	case strings.Contains(errMsg, "Status=400"),
+		strings.Contains(errMsg, "StatusCode:400"),
+		strings.Contains(errMsg, "InvalidArgument"):
+		return fmt.Errorf("%w: %s", storage.ErrInvalidArgument, errMsg)
+	}
+
+	if strings.Contains(errMsg, "ChecksumMismatch") ||
+		strings.Contains(errMsg, "md5 mismatch") {
+		return fmt.Errorf("%w: %s", storage.ErrChecksum, errMsg)
+	}
+
+	return err
+}
+
 // retryable checks if an error is retryable based on OBS error semantics.
 func retryable(err error) bool {
 	if err == nil {
@@ -39,6 +86,16 @@ func retryable(err error) bool {
 	// Network timeouts
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		return true
+	}
+
+	// Checksum mismatch is retryable
+	if errors.Is(err, storage.ErrChecksum) {
+		return true
+	}
+
+	// If already classified as non-retryable, don't retry
+	if nonRetryable(err) {
+		return false
 	}
 
 	errMsg := err.Error()
@@ -67,12 +124,6 @@ func retryable(err error) bool {
 		return true
 	}
 
-	// ChecksumMismatch is retryable
-	if strings.Contains(errMsg, "ChecksumMismatch") ||
-		strings.Contains(errMsg, "md5 mismatch") {
-		return true
-	}
-
 	// Connection errors
 	if strings.Contains(errMsg, "connection reset") ||
 		strings.Contains(errMsg, "connection refused") ||
@@ -89,26 +140,10 @@ func nonRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	errMsg := err.Error()
-
-	switch {
-	case strings.Contains(errMsg, "Status=400"),
-		strings.Contains(errMsg, "Status=403"),
-		strings.Contains(errMsg, "Status=404"),
-		strings.Contains(errMsg, "Status=409"),
-		strings.Contains(errMsg, "StatusCode:400"),
-		strings.Contains(errMsg, "StatusCode:403"),
-		strings.Contains(errMsg, "StatusCode:404"),
-		strings.Contains(errMsg, "StatusCode:409"):
-		return true
-	case strings.Contains(errMsg, "AccessDenied"),
-		strings.Contains(errMsg, "NoSuchBucket"),
-		strings.Contains(errMsg, "NoSuchKey"),
-		strings.Contains(errMsg, "InvalidArgument"),
-		strings.Contains(errMsg, "SignatureDoesNotMatch"):
-		return true
-	}
-	return false
+	return errors.Is(err, storage.ErrPermission) ||
+		errors.Is(err, storage.ErrNotFound) ||
+		errors.Is(err, storage.ErrAlreadyExists) ||
+		errors.Is(err, storage.ErrInvalidArgument)
 }
 
 // withRetry executes fn with exponential backoff retry on retryable errors.
@@ -119,7 +154,7 @@ func withRetry(ctx context.Context, cfg RetryConfig, fn func() error) error {
 			return err
 		}
 
-		lastErr = fn()
+		lastErr = mapError(fn())
 		if lastErr == nil {
 			return nil
 		}
@@ -157,6 +192,7 @@ func withRetryResult[T any](ctx context.Context, cfg RetryConfig, fn func() (T, 
 		}
 
 		result, lastErr = fn()
+		lastErr = mapError(lastErr)
 		if lastErr == nil {
 			return result, nil
 		}

@@ -7,19 +7,20 @@ import (
 
 // Client → Server message types (0x0X)
 const (
-	MsgOpen     uint8 = 0x01
-	MsgPwrite   uint8 = 0x02
-	MsgFsync    uint8 = 0x03
-	MsgClose    uint8 = 0x04
-	MsgMkdir    uint8 = 0x05
-	MsgSymlink  uint8 = 0x06
-	MsgUtime    uint8 = 0x07
-	MsgSetxattr uint8 = 0x08
-	MsgTaskDone uint8 = 0x09
-	MsgInit     uint8 = 0x0A
-	MsgList     uint8 = 0x0B
-	MsgPread    uint8 = 0x0C
-	MsgStat     uint8 = 0x0D
+	MsgOpen      uint8 = 0x01
+	MsgPwrite    uint8 = 0x02
+	MsgFsync     uint8 = 0x03
+	MsgClose     uint8 = 0x04
+	MsgMkdir     uint8 = 0x05
+	MsgSymlink   uint8 = 0x06
+	MsgUtime     uint8 = 0x07
+	MsgSetxattr  uint8 = 0x08
+	MsgTaskDone  uint8 = 0x09
+	MsgInit      uint8 = 0x0A
+	MsgList      uint8 = 0x0B
+	MsgPread     uint8 = 0x0C
+	MsgStat      uint8 = 0x0D
+	MsgAbortFile uint8 = 0x0E
 )
 
 // Server → Client message types (0x8X)
@@ -151,6 +152,22 @@ func (m *CloseMsg) Decode(data []byte) error {
 	off += 4
 	m.Checksum = make([]byte, csLen)
 	copy(m.Checksum, data[off:off+csLen])
+	return nil
+}
+
+// AbortFileMsg is the payload for MsgAbortFile.
+type AbortFileMsg struct {
+	FD uint32
+}
+
+func (m *AbortFileMsg) Encode() []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, m.FD)
+	return b
+}
+
+func (m *AbortFileMsg) Decode(data []byte) error {
+	m.FD = binary.BigEndian.Uint32(data)
 	return nil
 }
 

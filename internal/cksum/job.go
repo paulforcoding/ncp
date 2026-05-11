@@ -16,6 +16,8 @@ import (
 type CksumJob struct {
 	src         storage.Source
 	dst         storage.Source
+	srcFactory  func(id int) (storage.Source, error)
+	dstFactory  func(id int) (storage.Source, error)
 	store       progress.ProgressStore
 	taskID      string
 	parallelism int
@@ -61,17 +63,23 @@ func WithCksumAlgo(algo model.CksumAlgorithm) CksumJobOption {
 	return func(j *CksumJob) { j.cksumAlgo = algo }
 }
 func WithCksumChannelBuf(n int) CksumJobOption { return func(j *CksumJob) { j.channelBuf = n } }
+func WithCksumSrcFactory(f func(id int) (storage.Source, error)) CksumJobOption {
+	return func(j *CksumJob) { j.srcFactory = f }
+}
+func WithCksumDstFactory(f func(id int) (storage.Source, error)) CksumJobOption {
+	return func(j *CksumJob) { j.dstFactory = f }
+}
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {
-	cksumCh := make(chan model.DiscoverItem, j.channelBuf)
+	cksumCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
 	logDuration := durationFromSec(j.logInterval)
 	walker := copy.NewWalker(j.src, j.store, j.fileLog, logDuration)
 	dbWriter := NewCksumDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
-	workerWg := j.startCksumWorkers(cksumCh, resultCh)
+	workerWg := j.startCksumWorkers(ctx, cksumCh, resultCh)
 	dbWg := j.startCksumDBWriter(dbWriter, resultCh)
 
 	go func() {
@@ -91,14 +99,14 @@ func (j *CksumJob) Run(ctx context.Context) (int, error) {
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
-func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, cksumCh chan<- model.DiscoverItem) error {
+func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, cksumCh chan<- storage.DiscoverItem) error {
 	hasWalkComplete, err := j.store.HasWalkComplete()
 	if err != nil {
 		return fmt.Errorf("check walk_complete: %w", err)
 	}
 
 	if hasWalkComplete {
-		walker.ResumeFromDBForCksum(cksumCh)
+		walker.ResumeFromDBForCksum(ctx, cksumCh)
 		return nil
 	}
 
@@ -112,14 +120,41 @@ func (j *CksumJob) populateFromResume(ctx context.Context, walker *copy.Walker, 
 	return freshWalker.Run(ctx, cksumCh)
 }
 
-func (j *CksumJob) startCksumWorkers(cksumCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
+func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			w := NewCksumWorker(id, j.src, j.dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
-			w.Run(cksumCh, resultCh)
+
+			src := j.src
+			if j.srcFactory != nil {
+				var err error
+				src, err = j.srcFactory(id)
+				if err != nil {
+					return
+				}
+				if err := src.BeginTask(ctx, j.taskID); err != nil {
+					return
+				}
+				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
+			}
+
+			dst := j.dst
+			if j.dstFactory != nil {
+				var err error
+				dst, err = j.dstFactory(id)
+				if err != nil {
+					return
+				}
+				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					return
+				}
+				defer func() { _ = dst.EndTask(ctx, storage.TaskSummary{}) }()
+			}
+
+			w := NewCksumWorker(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.skipByMtime)
+			w.Run(ctx, cksumCh, resultCh)
 		}(i)
 	}
 	return &wg

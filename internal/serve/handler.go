@@ -28,8 +28,9 @@ type ConnHandler struct {
 }
 
 type openWriteFile struct {
-	f   *os.File
-	md5 hash.Hash
+	f    *os.File
+	path string
+	md5  hash.Hash
 }
 
 // NewConnHandler creates a ConnHandler ready to accept a connection.
@@ -86,6 +87,8 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 			respType, respPayload = h.handleFsync(frame)
 		case protocol.MsgClose:
 			respType, respPayload = h.handleClose(frame)
+		case protocol.MsgAbortFile:
+			respType, respPayload = h.handleAbortFile(frame)
 		case protocol.MsgMkdir:
 			respType, respPayload = h.handleMkdir(frame)
 		case protocol.MsgSymlink:
@@ -148,7 +151,7 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 
 	fd := h.nextFD
 	h.nextFD++
-	h.fdWriteMap[fd] = &openWriteFile{f: f, md5: md5.New()}
+	h.fdWriteMap[fd] = &openWriteFile{f: f, path: fullPath, md5: md5.New()}
 
 	return protocol.MsgAck, protocol.EncodeAckFD(0, fd)
 }
@@ -227,6 +230,22 @@ func (h *ConnHandler) handleClose(frame *protocol.Frame) (uint8, []byte) {
 	if f, ok := h.fdReadMap[msg.FD]; ok {
 		f.Close()
 		delete(h.fdReadMap, msg.FD)
+		return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
+	}
+
+	return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, "bad fd")
+}
+
+func (h *ConnHandler) handleAbortFile(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.AbortFileMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	if of, ok := h.fdWriteMap[msg.FD]; ok {
+		of.f.Close()
+		_ = os.Remove(of.path)
+		delete(h.fdWriteMap, msg.FD)
 		return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
 	}
 

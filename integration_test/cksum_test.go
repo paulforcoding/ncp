@@ -11,6 +11,7 @@ import (
 
 	"github.com/zp001/ncp/internal/cksum"
 	"github.com/zp001/ncp/pkg/impls/storage/remote"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -75,14 +76,32 @@ func runRemoteCksum(t *testing.T, srcDir, dstDir string) int {
 		t.Fatalf("new dst: %v", err)
 	}
 
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, srcDir)
+	}
+	dstFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, dstDir)
+	}
+
 	store := openTestStore(t)
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
+		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task src: %v", err)
+	}
+	defer src.EndTask(ctx, storage.TaskSummary{})
+	if err := dst.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
+	defer dst.EndTask(ctx, storage.TaskSummary{})
 
 	exitCode, _ := job.Run(ctx)
 	return exitCode
@@ -108,13 +127,29 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 	dst, _ := remote.NewSource(addr, dstDir)
 	store := openTestStore(t)
 
-	job := cksum.NewCksumJob(src, dst, store,
-		cksum.WithCksumParallelism(2),
-		cksum.WithCksumAlgo(model.CksumMD5),
-	)
+	srcFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, srcDir)
+	}
+	dstFactory := func(id int) (storage.Source, error) {
+		return remote.NewSource(addr, dstDir)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if err := src.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task src: %v", err)
+	}
+	if err := dst.BeginTask(ctx, ""); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
+
+	job := cksum.NewCksumJob(src, dst, store,
+		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
+		cksum.WithCksumDstFactory(dstFactory),
+		cksum.WithCksumAlgo(model.CksumMD5),
+	)
 
 	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
@@ -130,6 +165,8 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
 		cksum.WithCksumParallelism(2),
+		cksum.WithCksumSrcFactory(srcFactory),
+		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
 
@@ -140,4 +177,7 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0 on resume, got %d", exitCode)
 	}
+
+	src.EndTask(ctx, storage.TaskSummary{})
+	dst.EndTask(ctx, storage.TaskSummary{})
 }

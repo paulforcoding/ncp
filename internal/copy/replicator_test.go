@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/pkg/impls/storage/local"
+	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -23,7 +24,7 @@ func TestReplicatorCopyDir(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "subdir", FileType: model.FileDir, Mode: 0o755}
+	item := storage.DiscoverItem{RelPath: "subdir", FileType: model.FileDir, Attr: storage.FileAttr{Mode: 0o755}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyDone {
@@ -49,7 +50,7 @@ func TestReplicatorCopySymlink(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, LinkTarget: "target.txt"}
+	item := storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "target.txt"}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyDone {
@@ -77,7 +78,7 @@ func TestReplicatorCopyFile(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: 11, Mode: 0o644}
+	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 11, Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyDone {
@@ -104,7 +105,7 @@ func TestReplicatorCopyFileErrorNotExist(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "nonexistent.txt", FileType: model.FileRegular, FileSize: 100, Mode: 0o644}
+	item := storage.DiscoverItem{RelPath: "nonexistent.txt", FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyError {
@@ -123,7 +124,7 @@ func TestReplicatorEmptySymlinkTarget(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, LinkTarget: ""}
+	item := storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyError {
@@ -142,7 +143,7 @@ func TestReplicatorUnknownFileType(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "unknown", FileType: model.FileType(255)}
+	item := storage.DiscoverItem{RelPath: "unknown", FileType: model.FileType(255)}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyError {
@@ -166,7 +167,7 @@ func TestReplicatorCopyFileWithChecksum(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
-	item := model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: int64(len(content)), Mode: 0o644}
+	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: int64(len(content)), Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyDone {
@@ -204,7 +205,7 @@ func TestReplicatorSkipByMtime(t *testing.T) {
 	dst, _ := local.NewDestination(dstDir)
 
 	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, true)
-	item := model.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, FileSize: int64(len(content)), Mode: 0o644, Mtime: now.UnixNano()}
+	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: int64(len(content)), Attr: storage.FileAttr{Mode: 0o644, Mtime: now}}
 	result := r.copyOne(context.Background(), item)
 
 	if result.CopyStatus != model.CopyDone {

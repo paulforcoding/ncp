@@ -28,7 +28,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
 - 始终包含 `--ProgressStorePath` 和 `--FileLogOutput`，以便监控进度
 - 将 `--FileLogOutput` 设为已知文件路径（默认：`/tmp/ncp_file_log.json`）— 这是监控进度的关键
 - 将 `--FileLogInterval` 设为合理值（默认 5 秒即可；超大规模任务可用 10 以减少噪音）
-- OSS / COS / OBS URL 缺 `<profile>@` → ncp 启动期立即报错。在执行前用 `ncp profile show <name>` 确认 profile 存在(详见步骤 1.2)。
+- OSS / COS / OBS URL 缺 `<profile>@` → ncp 启动期立即报错。在执行前用 `ncp config show --profile <name>` 确认 profile 存在(详见步骤 1.2)。
 
 ## 2.2 用户确认
 

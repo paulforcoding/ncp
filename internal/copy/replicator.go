@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -38,25 +37,24 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 }
 
 // Run consumes items from discoverCh and sends results to resultCh.
-func (r *Replicator) Run(ctx context.Context, discoverCh <-chan model.DiscoverItem, resultCh chan<- model.FileResult) {
+func (r *Replicator) Run(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) {
 	for item := range discoverCh {
 		result := r.copyOne(ctx, item)
 		resultCh <- result
 	}
-	if f, ok := r.dst.(storage.TaskFinalizer); ok {
-		if err := f.Done(); err != nil {
-			slog.Error("replicator task finalize failed", "replicatorId", r.id, "error", err)
-		}
+	files, bytes := r.metrics.Totals()
+	if err := r.dst.EndTask(ctx, storage.TaskSummary{Files: files, Bytes: bytes}); err != nil {
+		slog.Error("replicator task end failed", "replicatorId", r.id, "error", err)
 	}
 }
 
-func (r *Replicator) copyOne(ctx context.Context, item model.DiscoverItem) model.FileResult {
+func (r *Replicator) copyOne(ctx context.Context, item storage.DiscoverItem) model.FileResult {
 	if r.skipByMtime {
 		if skipped, _ := ShouldSkipCopy(ctx, r.dst, item); skipped {
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,
-				FileSize:   item.FileSize,
+				FileSize:   item.Size,
 				CopyStatus: model.CopyDone,
 				Skipped:    true,
 				Algorithm:  string(r.cksumAlgo),
@@ -75,7 +73,7 @@ func (r *Replicator) copyOne(ctx context.Context, item model.DiscoverItem) model
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
-			FileSize:   item.FileSize,
+			FileSize:   item.Size,
 			CopyStatus: model.CopyError,
 			Algorithm:  string(r.cksumAlgo),
 			Err:        fmt.Errorf("unknown file type %d", item.FileType),
@@ -83,8 +81,8 @@ func (r *Replicator) copyOne(ctx context.Context, item model.DiscoverItem) model
 	}
 }
 
-func (r *Replicator) copyDir(ctx context.Context, item model.DiscoverItem) model.FileResult {
-	err := r.dst.Mkdir(ctx, item.RelPath, os.FileMode(item.Mode), item.Uid, item.Gid)
+func (r *Replicator) copyDir(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	err := r.dst.Mkdir(ctx, item.RelPath, item.Attr.Mode, item.Attr.Uid, item.Attr.Gid)
 	status := model.CopyDone
 	if err != nil {
 		status = model.CopyError
@@ -100,8 +98,8 @@ func (r *Replicator) copyDir(ctx context.Context, item model.DiscoverItem) model
 	}
 }
 
-func (r *Replicator) copySymlink(ctx context.Context, item model.DiscoverItem) model.FileResult {
-	if item.LinkTarget == "" {
+func (r *Replicator) copySymlink(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	if item.Attr.SymlinkTarget == "" {
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
@@ -111,7 +109,7 @@ func (r *Replicator) copySymlink(ctx context.Context, item model.DiscoverItem) m
 			Err:        fmt.Errorf("symlink target empty for %s", item.RelPath),
 		}
 	}
-	err := r.dst.Symlink(ctx, item.RelPath, item.LinkTarget)
+	err := r.dst.Symlink(ctx, item.RelPath, item.Attr.SymlinkTarget)
 	status := model.CopyDone
 	if err != nil {
 		status = model.CopyError
@@ -127,26 +125,26 @@ func (r *Replicator) copySymlink(ctx context.Context, item model.DiscoverItem) m
 	}
 }
 
-func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) model.FileResult {
-	reader, err := r.src.Open(item.RelPath)
+func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) model.FileResult {
+	reader, err := r.src.Open(ctx, item.RelPath)
 	if err != nil {
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
-			FileSize:   item.FileSize,
+			FileSize:   item.Size,
 			CopyStatus: model.CopyError,
 			Algorithm:  string(r.cksumAlgo),
 			Err:        err,
 		}
 	}
-	defer reader.Close()
+	defer reader.Close(ctx)
 
-	writer, err := r.dst.OpenFile(ctx, item.RelPath, item.FileSize, os.FileMode(item.Mode), item.Uid, item.Gid)
+	writer, err := r.dst.OpenFile(ctx, item.RelPath, item.Size, item.Attr.Mode, item.Attr.Uid, item.Attr.Gid)
 	if err != nil {
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
-			FileSize:   item.FileSize,
+			FileSize:   item.Size,
 			CopyStatus: model.CopyError,
 			Algorithm:  string(r.cksumAlgo),
 			Err:        err,
@@ -155,39 +153,36 @@ func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) mode
 
 	bufSize := r.ioSize
 	if bufSize <= 0 {
-		bufSize = model.ResolveIOSize(model.DefaultIOSizeTiers(), item.FileSize)
+		bufSize = model.ResolveIOSize(model.DefaultIOSizeTiers(), item.Size)
 	}
 	buf := make([]byte, bufSize)
 
-	var offset int64
 	h := NewHasher(r.cksumAlgo)
 	for {
-		n, readErr := reader.ReadAt(buf, offset)
+		n, readErr := reader.Read(ctx, buf)
 		if n > 0 {
 			h.Write(buf[:n])
-			written, writeErr := writer.WriteAt(buf[:n], offset)
-			if writeErr != nil {
-				writer.Close(ctx, nil)
+			if _, writeErr := writer.Write(ctx, buf[:n]); writeErr != nil {
+				_ = writer.Abort(ctx)
 				return model.FileResult{
 					RelPath:    item.RelPath,
 					FileType:   item.FileType,
-					FileSize:   item.FileSize,
+					FileSize:   item.Size,
 					CopyStatus: model.CopyError,
 					Algorithm:  string(r.cksumAlgo),
 					Err:        writeErr,
 				}
 			}
-			offset += int64(written)
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			writer.Close(ctx, nil)
+			_ = writer.Abort(ctx)
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,
-				FileSize:   item.FileSize,
+				FileSize:   item.Size,
 				CopyStatus: model.CopyError,
 				Algorithm:  string(r.cksumAlgo),
 				Err:        readErr,
@@ -196,11 +191,11 @@ func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) mode
 	}
 
 	checksumBytes := h.Sum(nil)
-	if err := writer.Close(ctx, checksumBytes); err != nil {
+	if err := writer.Commit(ctx, checksumBytes); err != nil {
 		return model.FileResult{
 			RelPath:    item.RelPath,
 			FileType:   item.FileType,
-			FileSize:   item.FileSize,
+			FileSize:   item.Size,
 			CopyStatus: model.CopyError,
 			Algorithm:  string(r.cksumAlgo),
 			Err:        err,
@@ -210,12 +205,12 @@ func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) mode
 	checksumHex := fmt.Sprintf("%x", checksumBytes)
 
 	// Preserve file mtime
-	if item.Mtime != 0 {
-		if err := r.dst.SetMetadata(ctx, item.RelPath, model.FileMetadata{Mtime: item.Mtime}); err != nil {
+	if !item.Attr.Mtime.IsZero() {
+		if err := r.dst.SetMetadata(ctx, item.RelPath, storage.FileAttr{Mtime: item.Attr.Mtime}); err != nil {
 			return model.FileResult{
 				RelPath:     item.RelPath,
 				FileType:    item.FileType,
-				FileSize:    item.FileSize,
+				FileSize:    item.Size,
 				CopyStatus:  model.CopyError,
 				Checksum:    checksumHex,
 				Algorithm:   string(r.cksumAlgo),
@@ -228,7 +223,7 @@ func (r *Replicator) copyFile(ctx context.Context, item model.DiscoverItem) mode
 	return model.FileResult{
 		RelPath:    item.RelPath,
 		FileType:   item.FileType,
-		FileSize:   item.FileSize,
+		FileSize:   item.Size,
 		CopyStatus: model.CopyDone,
 		Checksum:   checksumHex,
 		Algorithm:  string(r.cksumAlgo),

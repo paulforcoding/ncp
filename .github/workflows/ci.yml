@@ -21,6 +21,14 @@ jobs:
         with:
           version: latest
           args: --timeout=5m
+      - name: gofmt check
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt issues in:"
+            echo "$out"
+            exit 1
+          fi
 
   unit:
     name: Unit Tests
