@@ -1,7 +1,6 @@
 package ncpserver
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -113,24 +112,3 @@ func (s *Server) TaskID() string {
 	return s.taskID
 }
 
-// setModeAndTaskID sets the mode and taskID for the first connection.
-func (s *Server) setModeAndTaskID(mode uint8, taskID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.mode = mode
-	s.taskID = taskID
-}
-
-// checkModeAndTaskID returns nil if mode and taskID match the server's binding,
-// otherwise returns a descriptive error.
-func (s *Server) checkModeAndTaskID(mode uint8, taskID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mode != mode {
-		return fmt.Errorf("server already in mode %d", s.mode)
-	}
-	if s.taskID != taskID {
-		return fmt.Errorf("server serving task %q, restart to switch", s.taskID)
-	}
-	return nil
-}

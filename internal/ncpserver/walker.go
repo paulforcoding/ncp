@@ -134,13 +134,6 @@ func (tw *taskWalker) waitForEntries(seq int64, limit int) (entries []walkerdb.E
 	return entries, isDone && len(entries) < limit, nil
 }
 
-// isDone reports whether the walk has completed.
-func (tw *taskWalker) isDone() bool {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	return tw.done
-}
-
 // setError records a walk error.
 func (tw *taskWalker) setError(err error) {
 	tw.mu.Lock()
