@@ -13,19 +13,32 @@ import (
 	"github.com/zp001/ncp/pkg/model"
 )
 
+// SourceOption configures a Source on creation.
+type SourceOption func(*Source)
+
+// WithMode sets the protocol mode for InitMsg (ModeSource or ModeSourceNoWalker).
+func WithMode(mode uint8) SourceOption {
+	return func(s *Source) { s.mode = mode }
+}
+
 // Source implements storage.Source for remote ncp servers.
 type Source struct {
 	addr     string         // server address (host:port)
 	basePath string         // URL path (e.g. "/data/backup")
 	conn     *protocol.Conn // instance-level single connection
+	mode     uint8          // ModeSource or ModeSourceNoWalker
 }
 
 var _ storage.Source = (*Source)(nil)
 
 // NewSource creates a remote Source for the given ncp server.
-// The connection is not established until Connect is called.
-func NewSource(addr, basePath string) (*Source, error) {
-	return &Source{addr: addr, basePath: basePath}, nil
+// The connection is not established until BeginTask is called.
+func NewSource(addr, basePath string, opts ...SourceOption) (*Source, error) {
+	s := &Source{addr: addr, basePath: basePath, mode: protocol.ModeSource}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // dialAndInit establishes a fresh TCP connection and sends MsgInit.
@@ -34,7 +47,7 @@ func (s *Source) dialAndInit(taskID string) (*protocol.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("remote source dial %s: %w", s.addr, err)
 	}
-	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: protocol.ModeSource, TaskID: taskID}
+	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: s.mode, TaskID: taskID}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("remote source init %s: %w", s.addr, err)

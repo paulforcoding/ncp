@@ -31,7 +31,7 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("remote destination dial %s: %w", d.addr, err)
 	}
 
-	initMsg := &protocol.InitMsg{BasePath: d.basePath}
+	initMsg := &protocol.InitMsg{BasePath: d.basePath, Mode: protocol.ModeDestination, TaskID: taskID}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return fmt.Errorf("remote init %s: %w", d.addr, err)
@@ -41,13 +41,12 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// EndTask sends MsgTaskDone to the server and closes the connection.
+// EndTask closes the underlying connection.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error {
-	if d.conn == nil {
-		return nil
+	if d.conn != nil {
+		return d.conn.Close()
 	}
-	_, _ = d.conn.SendMsgRecvAck(protocol.MsgTaskDone, nil)
-	return d.conn.Close()
+	return nil
 }
 
 // OpenFile sends MsgOpen and returns a Writer backed by the shared connection.

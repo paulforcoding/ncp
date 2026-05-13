@@ -19,8 +19,8 @@ import (
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
+	"github.com/zp001/ncp/internal/ncpserver"
 	"github.com/zp001/ncp/internal/protocol"
-	"github.com/zp001/ncp/internal/serve"
 	"github.com/zp001/ncp/internal/task"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -153,6 +153,7 @@ func main() {
 		RunE:  runServe,
 	}
 	serveCmd.Flags().String("listen", ":9900", "Listen address (host:port)")
+	serveCmd.Flags().String("serve-temp-dir", "/tmp/ncpserve", "Temporary directory for walker DB")
 
 	// cksum command
 	cksumCmd := &cobra.Command{
@@ -250,12 +251,21 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Open progress store first to determine remote source mode
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
 	// Dependency injection
-	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, dstPath, progressDir, taskID)
+	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, dstPath, srcMode)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	// Source lifecycle
 	if err := src.BeginTask(ctx, taskID); err != nil {
@@ -290,6 +300,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	if dst != nil {
 		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
+
+	// Notify remote serve to exit
+	_ = notifyRemoteTaskDone(strings.Join(srcPaths, ","), dstPath, taskID, srcMode)
 
 	// Update meta.json
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
@@ -333,11 +346,20 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	defer fl.Close()
 
 	srcPaths := strings.Split(meta.SrcBase, ",")
-	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, progressDir, taskID)
+
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
+	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	if err := src.BeginTask(ctx, taskID); err != nil {
 		return fmt.Errorf("begin task on source: %w", err)
@@ -370,6 +392,9 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 	if dst != nil {
 		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
+
+	// Notify remote serve to exit
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -484,11 +509,20 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
 	srcPaths := strings.Split(meta.SrcBase, ",")
-	src, dst, store, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, progressDir, taskID)
+
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return 1, fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
+	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
 	if err != nil {
 		return 1, err
 	}
-	defer store.Close()
 
 	if err := src.BeginTask(ctx, taskID); err != nil {
 		return 1, fmt.Errorf("begin task on source: %w", err)
@@ -521,15 +555,25 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
 
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
+
 	return exitCode, err
 }
 
 func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, taskID, progressDir string, ctx context.Context) (int, error) {
-	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return 1, fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
+	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
 	if err != nil {
 		return 1, err
 	}
-	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
 		if err := s.BeginTask(ctx, taskID); err != nil {
@@ -555,6 +599,9 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 	for _, s := range []storage.Source{src, dst} {
 		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
+
+	// Notify remote serve to exit
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
 
 	return exitCode, err
 }
@@ -634,12 +681,21 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	}
 	defer fl.Close()
 
+	// Open progress store first to determine remote source mode
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
 	// Dependency injection
-	src, dst, store, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, progressDir, taskID)
+	src, dst, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, srcMode, srcMode)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
 		if err := s.BeginTask(ctx, taskID); err != nil {
@@ -665,6 +721,9 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	for _, s := range []storage.Source{src, dst} {
 		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
+
+	// Notify remote serve to exit
+	_ = notifyRemoteTaskDone(srcPath, dstPath, taskID, srcMode)
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -704,11 +763,19 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	}
 	defer fl.Close()
 
-	src, dst, store, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, progressDir, taskID)
+	dbDir := filepath.Join(progressDir, taskID, "db")
+	store, err := di.NewProgressStore(dbDir)
+	if err != nil {
+		return fmt.Errorf("open progress store: %w", err)
+	}
+	defer store.Close()
+
+	srcMode := resolveRemoteSourceMode(store)
+
+	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	for _, s := range []storage.Source{src, dst} {
 		if err := s.BeginTask(ctx, taskID); err != nil {
@@ -736,6 +803,9 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		_ = s.EndTask(ctx, storage.TaskSummary{})
 	}
 
+	// Notify remote serve to exit
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
+
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
 	if err != nil {
@@ -745,75 +815,116 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	return nil
 }
 
-// setupCksumDeps creates src Source, dst Source, and opens the Pebble store.
+// setupCksumDeps creates src Source, dst Source, and cksum options.
 // Both src and dst are Sources (readable) for checksum comparison.
-func setupCksumDeps(cfg *config.Config, srcPath, dstPath, progressDir, taskID string) (storage.Source, storage.Source, progress.ProgressStore, []cksum.CksumJobOption, error) {
+// srcMode and dstMode are the protocol modes for remote sources.
+func setupCksumDeps(cfg *config.Config, srcPath, dstPath string, srcMode, dstMode uint8) (storage.Source, storage.Source, []cksum.CksumJobOption, error) {
 	var extraOpts []cksum.CksumJobOption
 
-	src, err := di.NewSource(srcPath, cfg.Profiles)
+	src, err := di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("create source: %w", err)
+		return nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
 
 	su, _ := di.ParsePath(srcPath)
 	if su.Scheme == "ncp" {
 		srcFactory := func(id int) (storage.Source, error) {
-			return di.NewSource(srcPath, cfg.Profiles)
+			return di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
 		}
 		extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
 	}
 
-	dst, err := di.NewSource(dstPath, cfg.Profiles)
+	dst, err := di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("create destination source: %w", err)
+		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
 	}
 
 	du, _ := di.ParsePath(dstPath)
 	if du.Scheme == "ncp" {
 		dstFactory := func(id int) (storage.Source, error) {
-			return di.NewSource(dstPath, cfg.Profiles)
+			return di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode)
 		}
 		extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
 	}
 
-	dbDir := filepath.Join(progressDir, taskID, "db")
-	store, err := di.NewProgressStore(dbDir)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
-	}
-
-	return src, dst, store, extraOpts, nil
+	return src, dst, extraOpts, nil
 }
 
 // runServe handles `ncp serve` — starts the ncp protocol server.
 func runServe(cmd *cobra.Command, args []string) error {
 	listenAddr, _ := cmd.Flags().GetString("listen")
+	tempDir, _ := cmd.Flags().GetString("serve-temp-dir")
+
+	if err := ncpserver.CleanupTempDir(tempDir); err != nil {
+		return fmt.Errorf("cleanup temp dir: %w", err)
+	}
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
 
-	handlerFactory := func() protocol.ConnHandler {
-		return serve.NewConnHandler()
-	}
-
-	srv := protocol.NewServer(listener, handlerFactory)
+	srv := ncpserver.NewServer(listener, tempDir)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	go func() {
 		<-ctx.Done()
-		srv.Close()
+		srv.Shutdown()
 	}()
 
 	slog.Info("ncp serve started", "listen", listenAddr)
 
-	return srv.Serve()
+	err = srv.Serve()
+	if err != nil {
+		return err
+	}
+
+	// Serve returned (Shutdown was called), cleanup walker DB
+	if cErr := srv.Cleanup(); cErr != nil {
+		slog.Warn("server cleanup failed", "error", cErr)
+	}
+	return nil
 }
 
 // runTaskList handles `ncp task list`.
+// notifyRemoteTaskDone dials the remote ncp serve and sends MsgTaskDone
+// after the task has completed. No-op if neither src nor dst is ncp://.
+// srcMode is the mode used for remote sources (ModeSource or ModeSourceNoWalker).
+func notifyRemoteTaskDone(srcBase, dstBase, taskID string, srcMode uint8) error {
+	var addr, basePath string
+	var mode uint8
+
+	if u, err := di.ParsePath(srcBase); err == nil && u.Scheme == "ncp" {
+		addr = u.Host
+		basePath = u.Path
+		mode = srcMode
+	} else if u, err := di.ParsePath(dstBase); err == nil && u.Scheme == "ncp" {
+		addr = u.Host
+		basePath = u.Path
+		mode = protocol.ModeDestination
+	} else {
+		return nil
+	}
+
+	conn, err := protocol.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("dial remote for task done: %w", err)
+	}
+	defer conn.Close()
+
+	initMsg := &protocol.InitMsg{BasePath: basePath, Mode: mode, TaskID: taskID}
+	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
+		return fmt.Errorf("send init for task done: %w", err)
+	}
+
+	if _, err := conn.SendMsgRecvAck(protocol.MsgTaskDone, (&protocol.TaskDoneMsg{}).Encode()); err != nil {
+		return fmt.Errorf("send task done: %w", err)
+	}
+	return nil
+}
+
 func runTaskList(cmd *cobra.Command, args []string) error {
 	progressDir, _ := cmd.Flags().GetString("ProgressStorePath")
 
@@ -893,7 +1004,8 @@ func setupFileLog(cfg *config.Config, taskID, progressDir string) (*filelog.Emit
 // setupCopyDepsMulti creates source/destination deps for copy.
 // All sources are wrapped in BasenamePrefixedSource so that every source
 // (single or multiple) gets its basename as a subdirectory under dst.
-func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progressDir, taskID string) (storage.Source, storage.Destination, progress.ProgressStore, []copy.JobOption, error) {
+// srcMode is the protocol mode for remote sources (ModeSource or ModeSourceNoWalker).
+func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, srcMode uint8) (storage.Source, storage.Destination, []copy.JobOption, error) {
 	var src storage.Source
 	var err error
 
@@ -901,7 +1013,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		for _, sp := range srcPaths {
 			u, _ := di.ParsePath(sp)
 			if u.Scheme != "" && u.Scheme != "file" {
-				return nil, nil, nil, nil, fmt.Errorf("multi-source is only supported for local paths; %q has scheme %q", sp, u.Scheme)
+				return nil, nil, nil, fmt.Errorf("multi-source is only supported for local paths; %q has scheme %q", sp, u.Scheme)
 			}
 		}
 	}
@@ -909,15 +1021,15 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 	sources := make([]storage.Source, len(srcPaths))
 	basenames := make([]string, len(srcPaths))
 	for i, sp := range srcPaths {
-		sources[i], err = di.NewSource(sp, cfg.Profiles)
+		sources[i], err = di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
+			return nil, nil, nil, fmt.Errorf("create source %s: %w", sp, err)
 		}
 		basenames[i] = di.SourceBasename(sources[i], sp)
 	}
 	src, err = di.NewBasenamePrefixedSource(sources, basenames)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("create basename-prefixed source: %w", err)
+		return nil, nil, nil, fmt.Errorf("create basename-prefixed source: %w", err)
 	}
 
 	var extraOpts []copy.JobOption
@@ -932,10 +1044,8 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
 	case "oss":
-		// Eagerly validate the dst URL/profile so misconfiguration surfaces at
-		// setup rather than when a worker first invokes the factory.
 		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
-			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
+			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
 		}
 		dstFactory := func(id int) (storage.Destination, error) {
 			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
@@ -951,7 +1061,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		}
 		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("create destination: %w", err)
+			return nil, nil, nil, fmt.Errorf("create destination: %w", err)
 		}
 	}
 
@@ -960,20 +1070,14 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath, progress
 		su, _ := di.ParsePath(sp)
 		if su.Scheme == "ncp" {
 			srcFactory := func(id int) (storage.Source, error) {
-				return di.NewSource(sp, cfg.Profiles)
+				return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
 			}
 			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
 			break
 		}
 	}
 
-	dbDir := filepath.Join(progressDir, taskID, "db")
-	store, err := di.NewProgressStore(dbDir)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("open progress store: %w", err)
-	}
-
-	return src, dst, store, extraOpts, nil
+	return src, dst, extraOpts, nil
 }
 
 // loadResumeConfig loads config from a resume/task command's Viper flags.
@@ -1020,4 +1124,14 @@ func validateCksumAlgoForOSS(algo model.CksumAlgorithm, urls ...string) error {
 		}
 	}
 	return nil
+}
+
+// resolveRemoteSourceMode determines the mode for a remote source connection.
+// If the progress DB has a complete walk, returns ModeSourceNoWalker (no server-side walk).
+// Otherwise returns ModeSource (server creates a walker).
+func resolveRemoteSourceMode(store progress.ProgressStore) uint8 {
+	if hasComplete, err := store.HasWalkComplete(); err == nil && hasComplete {
+		return protocol.ModeSourceNoWalker
+	}
+	return protocol.ModeSource
 }

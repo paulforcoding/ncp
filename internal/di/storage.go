@@ -84,6 +84,19 @@ func NewSource(srcPath string, profiles map[string]model.Profile) (storage.Sourc
 	}
 }
 
+// NewSourceWithRemoteMode is like NewSource but passes the given mode to remote sources.
+// For non-ncp schemes the mode is ignored.
+func NewSourceWithRemoteMode(srcPath string, profiles map[string]model.Profile, mode uint8) (storage.Source, error) {
+	u, err := ParsePath(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "ncp" {
+		return remote.NewSource(u.Host, u.Path, remote.WithMode(mode))
+	}
+	return NewSource(srcPath, profiles)
+}
+
 // NewDestination creates a Destination from dstPath. Profile rules match NewSource.
 func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Profile) (storage.Destination, error) {
 	u, err := ParsePath(dstPath)
