@@ -59,6 +59,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
 		return fmt.Errorf("decode init: %w", err)
 	}
+	if initMsg.Mode == 0 || initMsg.TaskID == "" {
+		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send Mode and TaskID"))
+		return fmt.Errorf("old client rejected: missing Mode/TaskID")
+	}
 	h.basePath = initMsg.BasePath
 	if err := os.MkdirAll(h.basePath, 0o755); err != nil {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error()))

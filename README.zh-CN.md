@@ -35,8 +35,12 @@ ncp copy /data/project /backup/
 ncp copy /data/logs /data/configs /backup/
 
 # 复制到远程 ncp 服务器 — 在服务器上创建 /backup/project/...
-ncp serve --base /backup --listen :9900 &  # 在目标服务器上启动
+ncp serve --listen :9900   # 在目标服务器上启动
 ncp copy /data/project ncp://server:9900/backup/
+
+# 从远程 ncp 服务器复制 — 从服务器读取 /data/project
+ncp serve --listen :9900   # 在源服务器上启动
+ncp copy ncp://server:9900/data/project /backup/
 
 # 复制到阿里云 OSS — 在 bucket 下创建 backup/project/...
 ncp copy /data/project oss://prod@my-bucket/backup/
@@ -117,12 +121,12 @@ ncp copy oss://prod@my-bucket/ /restore/
 
 ### `ncp serve`
 
-启动 ncp 协议服务器接收文件推送。
+启动 ncp 协议服务器，为单次复制/校验任务服务。服务器只服务一个客户端、一个任务、一种模式（Source 或 Destination）。任务完成后收到 `MsgTaskDone` 信号即退出。
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--listen` | :9900 | 监听地址 |
-| `--base` | | 接收文件的基目录（必填） |
+| `--serve-temp-dir` | /tmp/ncpserve | walker DB 临时目录（Source 模式使用） |
 
 ### `ncp task`
 

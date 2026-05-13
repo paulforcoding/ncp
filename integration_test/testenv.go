@@ -12,8 +12,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/zp001/ncp/internal/protocol"
-	"github.com/zp001/ncp/internal/serve"
+	"github.com/zp001/ncp/internal/ncpserver"
 	"github.com/zp001/ncp/pkg/impls/progress/pebble"
 )
 
@@ -33,11 +32,13 @@ func startTestServer(t *testing.T, basePath string) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := protocol.NewServer(ln, func() protocol.ConnHandler {
-		return serve.NewConnHandler()
-	})
+	tempDir := t.TempDir()
+	srv := ncpserver.NewServer(ln, tempDir)
 	go srv.Serve()
-	t.Cleanup(func() { srv.Close() })
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = srv.Cleanup()
+	})
 	return ln.Addr().String()
 }
 
