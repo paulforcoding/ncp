@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zp001/ncp/internal/task"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -47,6 +48,9 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 	for _, o := range opts {
 		o(j)
 	}
+	if j.taskID == "" {
+		j.taskID = task.GenerateTaskID()
+	}
 	return j
 }
 
@@ -71,6 +75,9 @@ func WithSrcFactory(f func(id int) (storage.Source, error)) JobOption {
 func WithDstFactory(f func(id int) (storage.Destination, error)) JobOption {
 	return func(j *Job) { j.dstFactory = f }
 }
+
+// TaskID returns the job's task ID.
+func (j *Job) TaskID() string { return j.taskID }
 
 // Run executes the copy job and blocks until completion.
 func (j *Job) Run(ctx context.Context) (int, error) {

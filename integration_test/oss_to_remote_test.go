@@ -119,6 +119,7 @@ func TestIntegration_OSSToRemote_Copy_Resume(t *testing.T) {
 
 	job2 := copy.NewJob(src, nil, store,
 		copy.WithResume(true),
+		copy.WithTaskID(job.TaskID()),
 		copy.WithDstFactory(dstFactory2),
 		copy.WithDstBase("ncp://"+addr),
 		copy.WithCksumAlgo(model.CksumMD5),
@@ -185,7 +186,7 @@ func TestIntegration_OSSToRemote_Cksum(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := dst.BeginTask(ctx, ""); err != nil {
+	if err := dst.BeginTask(ctx, job.TaskID()); err != nil {
 		t.Fatalf("begin task dst: %v", err)
 	}
 	defer dst.EndTask(ctx, storage.TaskSummary{})
@@ -250,15 +251,15 @@ func TestIntegration_OSSToRemote_Cksum_Resume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := dst.BeginTask(ctx, ""); err != nil {
-		t.Fatalf("begin task dst: %v", err)
-	}
-
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(2),
 		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
+
+	if err := dst.BeginTask(ctx, job.TaskID()); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
 
 	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
@@ -273,6 +274,7 @@ func TestIntegration_OSSToRemote_Cksum_Resume(t *testing.T) {
 
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
+		cksum.WithCksumTaskID(job.TaskID()),
 		cksum.WithCksumParallelism(2),
 		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),

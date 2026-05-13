@@ -29,12 +29,12 @@ func NewSource(addr, basePath string) (*Source, error) {
 }
 
 // dialAndInit establishes a fresh TCP connection and sends MsgInit.
-func (s *Source) dialAndInit() (*protocol.Conn, error) {
+func (s *Source) dialAndInit(taskID string) (*protocol.Conn, error) {
 	conn, err := protocol.Dial(s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("remote source dial %s: %w", s.addr, err)
 	}
-	initMsg := &protocol.InitMsg{BasePath: s.basePath}
+	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: protocol.ModeSource, TaskID: taskID}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("remote source init %s: %w", s.addr, err)
@@ -44,7 +44,7 @@ func (s *Source) dialAndInit() (*protocol.Conn, error) {
 
 // BeginTask establishes the TCP connection and sends MsgInit.
 func (s *Source) BeginTask(ctx context.Context, taskID string) error {
-	conn, err := s.dialAndInit()
+	conn, err := s.dialAndInit(taskID)
 	if err != nil {
 		return err
 	}
@@ -85,6 +85,9 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 				return fmt.Errorf("remote list error (undecodable): %w", derr)
 			}
 			return fmt.Errorf("remote list error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
+		}
+		if f.Type != protocol.MsgData {
+			return fmt.Errorf("remote list: unexpected response type 0x%02X", f.Type)
 		}
 
 		dataMsg := &protocol.DataMsg{}

@@ -94,11 +94,11 @@ func runRemoteCksum(t *testing.T, srcDir, dstDir string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := src.BeginTask(ctx, ""); err != nil {
+	if err := src.BeginTask(ctx, job.TaskID()); err != nil {
 		t.Fatalf("begin task src: %v", err)
 	}
 	defer src.EndTask(ctx, storage.TaskSummary{})
-	if err := dst.BeginTask(ctx, ""); err != nil {
+	if err := dst.BeginTask(ctx, job.TaskID()); err != nil {
 		t.Fatalf("begin task dst: %v", err)
 	}
 	defer dst.EndTask(ctx, storage.TaskSummary{})
@@ -137,19 +137,19 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := src.BeginTask(ctx, ""); err != nil {
-		t.Fatalf("begin task src: %v", err)
-	}
-	if err := dst.BeginTask(ctx, ""); err != nil {
-		t.Fatalf("begin task dst: %v", err)
-	}
-
 	job := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumParallelism(2),
 		cksum.WithCksumSrcFactory(srcFactory),
 		cksum.WithCksumDstFactory(dstFactory),
 		cksum.WithCksumAlgo(model.CksumMD5),
 	)
+
+	if err := src.BeginTask(ctx, job.TaskID()); err != nil {
+		t.Fatalf("begin task src: %v", err)
+	}
+	if err := dst.BeginTask(ctx, job.TaskID()); err != nil {
+		t.Fatalf("begin task dst: %v", err)
+	}
 
 	exitCode, err := job.Run(ctx)
 	if exitCode != 2 {
@@ -164,6 +164,7 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 
 	job2 := cksum.NewCksumJob(src, dst, store,
 		cksum.WithCksumResume(true),
+		cksum.WithCksumTaskID(job.TaskID()),
 		cksum.WithCksumParallelism(2),
 		cksum.WithCksumSrcFactory(srcFactory),
 		cksum.WithCksumDstFactory(dstFactory),
