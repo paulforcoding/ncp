@@ -19,6 +19,7 @@ import (
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
+	"github.com/zp001/ncp/internal/mkfiles"
 	"github.com/zp001/ncp/internal/ncpserver"
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/internal/task"
@@ -177,7 +178,20 @@ func main() {
 	cksumCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newConfigCmd())
+	// mkfiles command
+	mkfilesCmd := &cobra.Command{
+		Use:   "mkfiles <dir>",
+		Short: "Generate random test files in a directory",
+		Long:  "Generate random test files with random names and content in the specified directory. Useful for testing ncp copy/cksum. Directories are nested up to --maxdirdepth levels, with 2^(depth-1) directories at each level. Files are randomly distributed across all directories.",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runMkfiles,
+	}
+	mkfilesCmd.Flags().Int("num", 100, "Number of files to generate")
+	mkfilesCmd.Flags().Int64("minsize", 0, "Minimum file size in bytes")
+	mkfilesCmd.Flags().Int64("maxsize", 1024, "Maximum file size in bytes")
+	mkfilesCmd.Flags().Int("maxdirdepth", 0, "Maximum directory nesting depth (0 = flat, no subdirectories)")
+
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, mkfilesCmd, newConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1134,4 +1148,26 @@ func resolveRemoteSourceMode(store progress.ProgressStore) uint8 {
 		return protocol.ModeSourceNoWalker
 	}
 	return protocol.ModeSource
+}
+
+// runMkfiles handles `ncp mkfiles <dir>`.
+func runMkfiles(cmd *cobra.Command, args []string) error {
+	num, _ := cmd.Flags().GetInt("num")
+	minSize, _ := cmd.Flags().GetInt64("minsize")
+	maxSize, _ := cmd.Flags().GetInt64("maxsize")
+	maxDirDepth, _ := cmd.Flags().GetInt("maxdirdepth")
+	dir := args[0]
+
+	gen, err := mkfiles.NewGenerator(mkfiles.Config{
+		Dir:         dir,
+		NumFiles:    num,
+		MinSize:     minSize,
+		MaxSize:     maxSize,
+		MaxDirDepth: maxDirDepth,
+	})
+	if err != nil {
+		return err
+	}
+
+	return gen.Run()
 }
