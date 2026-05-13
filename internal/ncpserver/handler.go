@@ -23,7 +23,6 @@ type ConnHandler struct {
 	fdWriteMap map[uint32]*openWriteFile
 	fdReadMap  map[uint32]*os.File
 	nextFD     uint32
-
 }
 
 type openWriteFile struct {

@@ -111,4 +111,3 @@ func (s *Server) TaskID() string {
 	defer s.mu.Unlock()
 	return s.taskID
 }
-
