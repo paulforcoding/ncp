@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/copy"
+	"github.com/zp001/ncp/internal/task"
 	"github.com/zp001/ncp/pkg/interfaces/progress"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -45,6 +46,9 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 	for _, o := range opts {
 		o(j)
 	}
+	if j.taskID == "" {
+		j.taskID = task.GenerateTaskID()
+	}
 	return j
 }
 
@@ -69,6 +73,9 @@ func WithCksumSrcFactory(f func(id int) (storage.Source, error)) CksumJobOption 
 func WithCksumDstFactory(f func(id int) (storage.Source, error)) CksumJobOption {
 	return func(j *CksumJob) { j.dstFactory = f }
 }
+
+// TaskID returns the job's task ID.
+func (j *CksumJob) TaskID() string { return j.taskID }
 
 // Run executes the checksum job and blocks until completion.
 func (j *CksumJob) Run(ctx context.Context) (int, error) {

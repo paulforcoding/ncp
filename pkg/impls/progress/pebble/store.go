@@ -3,6 +3,7 @@ package pebble
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/cockroachdb/pebble"
 
@@ -87,6 +88,7 @@ func (s *Store) Sync() error {
 // Close releases all resources.
 func (s *Store) Close() error {
 	if s.db != nil {
+		fmt.Fprintf(os.Stderr, "[DEBUG] progress pebble Close called from: %s\n", debug.Stack())
 		return s.db.Close()
 	}
 	return nil

@@ -9,7 +9,7 @@ ncp 是一个面向海量文件迁移的命令行工具，核心设计目标：
 - **海量规模**：流水线架构（Walker → Replicator → DBWriter），内存占用与文件数量无关，已验证支持 1000万+ 文件。
 - **精确断点续传**：每个文件的复制/校验状态持久化到 PebbleDB，随时中断、精确恢复。
 - **Agent-First 输出**：结构化 NDJSON 事件流（`file_complete`、`file_metadata_complete`、`progress_summary`），供脚本和 Agent 消费。
-- **多端存储**：本地文件系统、远程 ncp 服务器（`ncp://`）、阿里云 OSS（`oss://`）。
+- **多端存储**：本地文件系统、远程 ncp 服务器（`ncp://`）、阿里云 OSS（`oss://`）、腾讯云 COS（`cos://`）、华为云 OBS（`obs://`）。
 - **复制-校验闭环**：支持 "先复制再校验" 和 "先校验再增量复制" 两种工作流。
 
 ### 支持的操作
@@ -19,7 +19,7 @@ ncp 是一个面向海量文件迁移的命令行工具，核心设计目标：
 | `ncp copy <src>... <dst>` | 复制文件（多源 → 单目标） |
 | `ncp cksum <src> <dst>` | 校验源和目标的数据一致性 |
 | `ncp resume <taskID>` | 自动检测 jobType 并恢复中断任务 |
-| `ncp serve` | 启动接收端服务器 |
+| `ncp serve` | 启动 ncp 协议服务器（单 task、单客户端、单模式，task 完成后自动退出） |
 | `ncp task list/show/delete` | 任务管理 |
 
 ---
@@ -87,12 +87,29 @@ internal/
   copy/               # copy 命令的流水线（walker.go / replicator.go / dbwriter.go / job.go）
   cksum/              # cksum 命令的流水线（worker.go / dbwriter.go / job.go）
   protocol/           # ncp 网络协议（frame / message / conn / server / client）
-  serve/              # serve 命令的 connection handler
+  ncpserver/          # ncp serve 命令的服务端（单 task、walker DB、状态机）
+  serve/              # (deprecated) 旧 connection handler
   filelog/            # 结构化日志（FileLog / ProgramLog）
   task/               # 任务元数据管理（meta.json / 文件锁）
   config/             # 配置加载（Viper + 分层配置文件）
   di/                 # 依赖注入工厂（storage / progress store 组装）
   signal/             # 信号处理
+
+pkg/
+  interfaces/
+    storage/          # 存储抽象（Source / Destination / Walker / Reader / Writer）
+    progress/         # 进度存储抽象（ProgressStore / Batch / Iterator）
+    walkerdb/         # WalkerDB 抽象（目录遍历结果的持久化存储）
+  model/              # 核心数据结构（DiscoverItem / FileResult / Status / Metadata）
+  impls/
+    storage/
+      local/          # 本地文件系统实现（DirectIO、xattr、mtime 恢复）
+      aliyun/         # 阿里云 OSS 实现
+      cos/            # 腾讯云 COS 实现
+      obs/            # 华为云 OBS 实现
+      remote/         # ncp:// 协议客户端实现
+    progress/pebble/  # PebbleDB 进度存储实现
+    walkerdb/pebble/  # PebbleDB WalkerDB 实现
 
 integration_test/     # 集成测试（本地↔OSS↔远程 交叉测试）
 ```
@@ -190,22 +207,23 @@ MaxPayload = 16 MB
 
 | Type | 名称 | 方向 | 说明 |
 |------|------|------|------|
-| 1 | Hello | C→S | 客户端握手，发送版本号 |
-| 2 | HelloAck | S→C | 服务端确认 |
-| 3 | OpenFile | C→S | 请求创建/打开文件 |
-| 4 | OpenFileAck | S→C | 确认，可能携带 error |
-| 5 | WriteChunk | C→S | 写入数据块 |
-| 6 | WriteChunkAck | S→C | 确认写入 |
-| 7 | CloseFile | C→S | 关闭文件，携带 checksum |
-| 8 | CloseFileAck | S→C | 确认关闭 |
-| 9 | Mkdir | C→S | 创建目录 |
-| 10 | MkdirAck | S→C | 确认 |
-| 11 | Symlink | C→S | 创建符号链接 |
-| 12 | SymlinkAck | S→C | 确认 |
-| 13 | SetMetadata | C→S | 设置文件元数据 |
-| 14 | SetMetadataAck | S→C | 确认 |
-| 15 | Done | C→S | 任务完成通知 |
-| 16 | DoneAck | S→C | 确认 |
+| 1 | Open | C→S | 打开/创建文件 |
+| 2 | Pwrite | C→S | 写入数据块 |
+| 3 | Fsync | C→S | 同步文件 |
+| 4 | Close | C→S | 关闭文件，携带 checksum |
+| 5 | Mkdir | C→S | 创建目录 |
+| 6 | Symlink | C→S | 创建符号链接 |
+| 7 | Utime | C→S | 设置时间 |
+| 8 | Setxattr | C→S | 设置扩展属性 |
+| 9 | TaskDone | C→S | **task 完成信号**（触发 serve 退出） |
+| 10 | Init | C→S | 初始化连接（携带 Mode + TaskID + BasePath） |
+| 11 | List | C→S | 请求目录列表（分页） |
+| 12 | Pread | C→S | 读取文件数据 |
+| 13 | Stat | C→S | 查询文件元数据 |
+| 14 | AbortFile | C→S | 中止文件写入 |
+| 0x81 | Ack | S→C | 确认 |
+| 0x82 | Error | S→C | 错误响应 |
+| 0x83 | Data | S→C | 数据响应（List 结果 / Pread 数据） |
 
 ---
 
@@ -375,7 +393,7 @@ make lint           # golangci-lint
 ## 8. 常见陷阱
 
 1. **OSS 必须用 profile 引用**:`oss://<profile>@bucket/path/`。profile 集中定义在 `ncp_config.json` 的 `Profiles` 下,`Profiles.<name>.Provider` 必须等于 URL scheme。`--cksum-algorithm` 必须为 `md5`(OSS 用 Content-MD5 校验,不支持 `xxh64`)。
-2. **ncp:// 仅作目标**：`ncp://` 只能作为 copy 的 destination，不能作为 source。
+2. **ncp:// 可作源或目标**：`ncp://` 既可以作为 copy/cksum 的 source，也可以作为 destination。
 3. **多源限制**：多个本地源可以同时复制，但不能混用 `oss://` 或 `ncp://` 作为多源之一。
 4. **copy vs cksum 路径语义不同**：`ncp copy /data/dir /tmp/` 产生 `/tmp/dir/...`（自动加 basename），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
 5. **DirectIO 与 SyncWrites 互斥**：同时启用会在配置验证时报错。

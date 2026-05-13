@@ -388,23 +388,56 @@ func (m *ErrorMsg) Decode(data []byte) error {
 	return nil
 }
 
-// InitMsg is the payload for MsgInit — sent by client after connection to set basePath.
+// Mode constants for InitMsg.
+const (
+	ModeSource         uint8 = 1
+	ModeDestination    uint8 = 2
+	ModeSourceNoWalker uint8 = 3
+)
+
+// InitMsg is the payload for MsgInit — sent by client after connection.
 type InitMsg struct {
 	BasePath string
+	Mode     uint8
+	TaskID   string
 }
 
 func (m *InitMsg) Encode() []byte {
 	pathBytes := []byte(m.BasePath)
-	n := 2 + len(pathBytes)
+	taskIDBytes := []byte(m.TaskID)
+	n := 2 + len(pathBytes) + 1 + 2 + len(taskIDBytes)
 	b := make([]byte, n)
-	binary.BigEndian.PutUint16(b[0:], uint16(len(pathBytes)))
-	copy(b[2:], pathBytes)
+	off := 0
+	binary.BigEndian.PutUint16(b[off:], uint16(len(pathBytes)))
+	off += 2
+	copy(b[off:], pathBytes)
+	off += len(pathBytes)
+	b[off] = m.Mode
+	off += 1
+	binary.BigEndian.PutUint16(b[off:], uint16(len(taskIDBytes)))
+	off += 2
+	copy(b[off:], taskIDBytes)
 	return b
 }
 
 func (m *InitMsg) Decode(data []byte) error {
+	if len(data) < 2 {
+		return fmt.Errorf("init msg too short")
+	}
 	pathLen := int(binary.BigEndian.Uint16(data[0:]))
+	if len(data) < 2+pathLen+1+2 {
+		return fmt.Errorf("init msg missing mode/taskID fields")
+	}
 	m.BasePath = string(data[2 : 2+pathLen])
+	off := 2 + pathLen
+	m.Mode = data[off]
+	off += 1
+	taskIDLen := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if len(data) < off+taskIDLen {
+		return fmt.Errorf("init msg truncated")
+	}
+	m.TaskID = string(data[off : off+taskIDLen])
 	return nil
 }
 
@@ -576,6 +609,9 @@ func (m *DataMsg) Encode() []byte {
 }
 
 func (m *DataMsg) Decode(data []byte) error {
+	if len(data) < 6 {
+		return fmt.Errorf("data msg too short: %d bytes", len(data))
+	}
 	off := 0
 	m.ResultCode = binary.BigEndian.Uint16(data[off:])
 	off += 2
@@ -583,19 +619,37 @@ func (m *DataMsg) Decode(data []byte) error {
 	off += 4
 	m.Entries = make([]ListEntry, entryCount)
 	for i := 0; i < entryCount; i++ {
+		if len(data) < off+4 {
+			return fmt.Errorf("data msg truncated at entry %d count header", i)
+		}
 		entryLen := int(binary.BigEndian.Uint32(data[off:]))
 		off += 4
+		if len(data) < off+entryLen {
+			return fmt.Errorf("data msg truncated at entry %d: want %d bytes, have %d", i, entryLen, len(data)-off)
+		}
 		if err := m.Entries[i].Decode(data[off : off+entryLen]); err != nil {
 			return fmt.Errorf("decode entry %d: %w", i, err)
 		}
 		off += entryLen
 	}
+	if len(data) < off+2 {
+		return fmt.Errorf("data msg truncated at token length")
+	}
 	tokenLen := int(binary.BigEndian.Uint16(data[off:]))
 	off += 2
+	if len(data) < off+tokenLen {
+		return fmt.Errorf("data msg truncated at token: want %d bytes, have %d", tokenLen, len(data)-off)
+	}
 	m.ContinuationToken = string(data[off : off+tokenLen])
 	off += tokenLen
+	if len(data) < off+4 {
+		return fmt.Errorf("data msg truncated at data length")
+	}
 	dataLen := int(binary.BigEndian.Uint32(data[off:]))
 	off += 4
+	if len(data) < off+dataLen {
+		return fmt.Errorf("data msg truncated at data: want %d bytes, have %d", dataLen, len(data)-off)
+	}
 	m.Data = make([]byte, dataLen)
 	copy(m.Data, data[off:off+dataLen])
 	return nil

@@ -1,14 +1,12 @@
-package serve
+package ncpserver
 
 import (
 	"crypto/md5"
 	"fmt"
 	"hash"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
@@ -17,14 +15,15 @@ import (
 
 // ConnHandler handles all protocol messages on a single server connection.
 type ConnHandler struct {
-	basePath   string // set by MsgInit from client URL
+	server     *Server
+	basePath   string
+	mode       uint8
+	taskID     string
+	walker     *taskWalker // Source mode only; references server.walker
 	fdWriteMap map[uint32]*openWriteFile
 	fdReadMap  map[uint32]*os.File
 	nextFD     uint32
 
-	// cached walk entries for MsgList (populated on first MsgList, reused for pagination)
-	walkEntries []protocol.ListEntry
-	walkDone    bool
 }
 
 type openWriteFile struct {
@@ -33,44 +32,77 @@ type openWriteFile struct {
 	md5  hash.Hash
 }
 
-// NewConnHandler creates a ConnHandler ready to accept a connection.
-// basePath is set later via MsgInit from the client.
-func NewConnHandler() *ConnHandler {
+// NewConnHandler creates a ConnHandler for the given server.
+func NewConnHandler(server *Server) *ConnHandler {
 	return &ConnHandler{
+		server:     server,
 		fdWriteMap: make(map[uint32]*openWriteFile),
 		fdReadMap:  make(map[uint32]*os.File),
 	}
 }
 
-// HandleConn implements protocol.ConnHandler.
+// HandleConn implements the ncp protocol message loop.
 func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 	defer h.cleanup()
 
-	// 1. Wait for MsgInit to set basePath
+	// 1. Wait for MsgInit
 	frame, err := conn.Recv()
 	if err != nil {
 		return err
 	}
 	if frame.Type != protocol.MsgInit {
-		return fmt.Errorf("expected MsgInit (0x0A), got 0x%02X", frame.Type)
+		return fmt.Errorf("expected MsgInit, got 0x%02X", frame.Type)
 	}
 	initMsg := &protocol.InitMsg{}
 	if err := initMsg.Decode(frame.Payload); err != nil {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
-		return fmt.Errorf("decode init: %w", err)
+		return err
 	}
+
+	// Reject old clients that don't send Mode and TaskID
 	if initMsg.Mode == 0 || initMsg.TaskID == "" {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send Mode and TaskID"))
 		return fmt.Errorf("old client rejected: missing Mode/TaskID")
 	}
+
+	// Server state machine validation
+	h.server.mu.Lock()
+	if h.server.mode == ServerModeUninitialized {
+		// First connection: create walker for Source, skip for SourceNoWalker, MkdirAll for Destination
+		if initMsg.Mode == protocol.ModeSource {
+			h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, h.server.tempDir)
+			h.server.walker.start()
+		} else if initMsg.Mode == protocol.ModeSourceNoWalker {
+			// SourceNoWalker: no walker needed
+		} else {
+			_ = os.MkdirAll(initMsg.BasePath, 0o755)
+		}
+		h.server.mode = initMsg.Mode
+		h.server.taskID = initMsg.TaskID
+	} else {
+		if initMsg.Mode != h.server.mode {
+			h.server.mu.Unlock()
+			_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol,
+				fmt.Sprintf("server already in mode %d", h.server.mode)))
+			return fmt.Errorf("mode mismatch")
+		}
+		if initMsg.TaskID != h.server.taskID {
+			h.server.mu.Unlock()
+			_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol,
+				fmt.Sprintf("server serving task %q, restart to switch", h.server.taskID)))
+			return fmt.Errorf("taskID mismatch")
+		}
+	}
+	h.server.mu.Unlock()
+
 	h.basePath = initMsg.BasePath
-	if err := os.MkdirAll(h.basePath, 0o755); err != nil {
-		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error()))
-		return err
+	h.mode = initMsg.Mode
+	h.taskID = initMsg.TaskID
+	if h.mode == protocol.ModeSource {
+		h.walker = h.server.walker
 	}
-	if err := conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()); err != nil {
-		return err
-	}
+
+	_ = conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode())
 
 	// 2. Message loop
 	for {
@@ -83,6 +115,21 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		var respPayload []byte
 
 		switch frame.Type {
+		case protocol.MsgTaskDone:
+			respType = protocol.MsgAck
+			respPayload = (&protocol.AckMsg{ResultCode: 0}).Encode()
+			_ = conn.Send(respType, respPayload)
+			h.server.Shutdown()
+			return nil
+
+		case protocol.MsgList:
+			if h.mode != protocol.ModeSource {
+				respType = protocol.MsgError
+				respPayload = protocol.EncodeError(model.ErrProtocol, "MsgList only allowed in Source mode")
+				break
+			}
+			respType, respPayload = h.handleList(frame)
+
 		case protocol.MsgOpen:
 			respType, respPayload = h.handleOpen(frame)
 		case protocol.MsgPwrite:
@@ -101,15 +148,6 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 			respType, respPayload = h.handleUtime(frame)
 		case protocol.MsgSetxattr:
 			respType, respPayload = h.handleSetxattr(frame)
-		case protocol.MsgTaskDone:
-			respType = protocol.MsgAck
-			respPayload = (&protocol.AckMsg{ResultCode: 0}).Encode()
-			if err := conn.Send(respType, respPayload); err != nil {
-				return err
-			}
-			return nil
-		case protocol.MsgList:
-			respType, respPayload = h.handleList(frame)
 		case protocol.MsgPread:
 			respType, respPayload = h.handlePread(frame)
 		case protocol.MsgStat:
@@ -125,7 +163,7 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 	}
 }
 
-// fullPath joins basePath with relPath to produce an absolute path.
+// fullPath joins basePath with relPath.
 func (h *ConnHandler) fullPath(relPath string) string {
 	return filepath.Join(h.basePath, relPath)
 }
@@ -142,7 +180,6 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return h.handleOpenRead(msg)
 	}
 
-	// Write mode
 	fullPath := h.fullPath(msg.Path)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
@@ -326,35 +363,30 @@ func (h *ConnHandler) handleList(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
 	}
 
-	// Populate walk entries on first request (token == "")
-	if msg.ContinuationToken == "" && !h.walkDone {
-		entries, err := h.walkDir()
-		if err != nil {
-			return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
-		}
-		h.walkEntries = entries
-		h.walkDone = true
-	}
-
-	// Parse continuation token as offset
-	offset := 0
+	// Parse continuation token as sequence number
+	seq := int64(0)
 	if msg.ContinuationToken != "" {
-		if _, err := fmt.Sscanf(msg.ContinuationToken, "%d", &offset); err != nil {
+		if _, err := fmt.Sscanf(msg.ContinuationToken, "%d", &seq); err != nil {
 			return protocol.MsgError, protocol.EncodeError(model.ErrProtocol,
 				fmt.Sprintf("bad continuation token %q: %v", msg.ContinuationToken, err))
 		}
 	}
 
-	end := offset + listPageSize
-	if end > len(h.walkEntries) {
-		end = len(h.walkEntries)
+	entries, done, err := h.walker.waitForEntries(seq, listPageSize)
+	if err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
 	}
 
-	page := h.walkEntries[offset:end]
+	page := make([]protocol.ListEntry, len(entries))
+	for i, e := range entries {
+		page[i] = e.Entry
+	}
 
 	var nextToken string
-	if end < len(h.walkEntries) {
-		nextToken = fmt.Sprintf("%d", end)
+	if !done || len(entries) == listPageSize {
+		// There may be more entries; use next seq as token
+		nextSeq := seq + int64(len(entries))
+		nextToken = fmt.Sprintf("%d", nextSeq)
 	}
 
 	resp := &protocol.DataMsg{
@@ -411,76 +443,6 @@ func (h *ConnHandler) handleStat(frame *protocol.Frame) (uint8, []byte) {
 	}
 
 	return protocol.MsgData, resp.Encode()
-}
-
-// walkDir traverses basePath and returns all ListEntry items.
-func (h *ConnHandler) walkDir() ([]protocol.ListEntry, error) {
-	var entries []protocol.ListEntry
-
-	err := filepath.Walk(h.basePath, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(h.basePath, path)
-		if err != nil {
-			return nil
-		}
-		relPath = filepath.ToSlash(relPath)
-		if relPath == "." {
-			return nil
-		}
-
-		// Skip special file types
-		mode := info.Mode()
-		if mode&fs.ModeDevice != 0 || mode&fs.ModeNamedPipe != 0 || mode&fs.ModeSocket != 0 {
-			return nil
-		}
-
-		entry := infoToListEntry(relPath, info, path)
-		entries = append(entries, entry)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].RelPath < entries[j].RelPath
-	})
-
-	return entries, nil
-}
-
-// infoToListEntry converts os.FileInfo to a protocol ListEntry.
-// fullPath is used to read symlink targets.
-func infoToListEntry(relPath string, info fs.FileInfo, fullPath string) protocol.ListEntry {
-	mode := info.Mode()
-	var ft uint8
-	switch {
-	case info.IsDir():
-		ft = uint8(model.FileDir)
-	case mode&fs.ModeSymlink != 0:
-		ft = uint8(model.FileSymlink)
-	default:
-		ft = uint8(model.FileRegular)
-	}
-
-	entry := protocol.ListEntry{
-		RelPath:  relPath,
-		FileType: ft,
-		FileSize: info.Size(),
-		Mode:     uint32(mode.Perm()),
-		Mtime:    info.ModTime().UnixNano(),
-	}
-
-	if mode&fs.ModeSymlink != 0 {
-		if target, err := os.Readlink(fullPath); err == nil {
-			entry.LinkTarget = target
-		}
-	}
-
-	return entry
 }
 
 func (h *ConnHandler) cleanup() {

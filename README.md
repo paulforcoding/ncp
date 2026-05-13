@@ -32,13 +32,12 @@ ncp uses URL-style path prefixes to select the storage backend:
 | Scheme | Syntax | Source | Destination | Example |
 |--------|--------|--------|-------------|---------|
 | *(none)* | `/path/to/dir` | Yes | Yes | `/data/project` |
-| `ncp://` | `ncp://host:port/path` | No | Yes | `ncp://server:9900/backup` |
+| `ncp://` | `ncp://host:port/path` | Yes | Yes | `ncp://server:9900/backup` |
 | `oss://` | `oss://<profile>@bucket/prefix/` | Yes | Yes | `oss://prod@my-bucket/backup/` |
 | `cos://` | `cos://<profile>@bucket/prefix/` | Yes | Yes | `cos://prod@my-bucket-1250000000/backup/` |
 | `obs://` | `obs://<profile>@bucket/prefix/` | Yes | Yes | `obs://prod@my-bucket/backup/` |
 
 **Constraints:**
-- `ncp://` is destination-only (remote server receives pushes).
 - `oss://`, `cos://`, and `obs://` require a `<profile>@` prefix referencing a profile defined in `ncp_config.json`. Local and `ncp://` URLs MUST NOT carry a profile.
 
 ### Path Semantics
@@ -184,8 +183,12 @@ ncp copy /data/project /backup/
 ncp copy /data/logs /data/configs /backup/
 
 # Copy to a remote ncp server — creates /backup/project/... on the server
-ncp serve --base /backup --listen :9900 &  # on the destination server
+ncp serve --listen :9900   # on the destination server
 ncp copy /data/project ncp://server:9900/backup/
+
+# Copy from a remote ncp server — reads /data/project from the server
+ncp serve --listen :9900   # on the source server
+ncp copy ncp://server:9900/data/project /backup/
 
 # Copy to Alibaba Cloud OSS — creates backup/project/... under the bucket
 ncp copy /data/project oss://prod@my-bucket/backup/
@@ -258,12 +261,12 @@ Resume an interrupted copy or checksum task. Auto-detects job type from the task
 
 ### `ncp serve`
 
-Start an ncp protocol server to receive file pushes.
+Start an ncp protocol server for a single copy/checksum task. The server serves one client, one task, and one mode (Source or Destination). After the task completes, the server receives a `MsgTaskDone` signal and exits.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | :9900 | Listen address |
-| `--base` | | Base directory for received files (required) |
+| `--serve-temp-dir` | /tmp/ncpserve | Temporary directory for walker DB (Source mode) |
 
 ### `ncp task`
 
