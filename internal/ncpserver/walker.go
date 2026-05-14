@@ -166,12 +166,16 @@ func infoToListEntry(relPath string, info fs.FileInfo, fullPath string) protocol
 		ft = uint8(model.FileRegular)
 	}
 
+	uid, gid := fileOwner(info)
+
 	entry := protocol.ListEntry{
 		RelPath:  relPath,
 		FileType: ft,
 		FileSize: info.Size(),
-		Mode:     uint32(mode.Perm()),
+		Mode:     osModeToProto(mode),
 		Mtime:    info.ModTime().UnixNano(),
+		UID:      uint32(uid),
+		GID:      uint32(gid),
 	}
 
 	if mode&fs.ModeSymlink != 0 {

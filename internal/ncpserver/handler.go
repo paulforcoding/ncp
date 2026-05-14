@@ -46,6 +46,21 @@ func protoFlagsToOS(pf uint32) int {
 	return flags
 }
 
+// osModeToProto converts Go os.FileMode to POSIX permission bits for the protocol.
+func osModeToProto(mode os.FileMode) uint32 {
+	pm := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		pm |= protocol.ProtoModeSetuid
+	}
+	if mode&os.ModeSetgid != 0 {
+		pm |= protocol.ProtoModeSetgid
+	}
+	if mode&os.ModeSticky != 0 {
+		pm |= protocol.ProtoModeSticky
+	}
+	return pm
+}
+
 type openWriteFile struct {
 	f    *os.File
 	path string
@@ -320,7 +335,7 @@ func (h *ConnHandler) handleMkdir(frame *protocol.Frame) (uint8, []byte) {
 	}
 
 	fullPath := h.fullPath(msg.Path)
-	if err := os.MkdirAll(fullPath, os.FileMode(msg.Mode)); err != nil {
+	if err := os.MkdirAll(fullPath, os.FileMode(msg.Mode&0o777)); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
 	}
 

@@ -39,6 +39,23 @@ func osFlagsToProto(flags int) uint32 {
 	return pf
 }
 
+// osModeToProto converts Go os.FileMode to POSIX permission bits for the protocol.
+// Go uses high bits (bit 21-23) for setuid/setgid/sticky; the protocol uses
+// POSIX values (bit 9-11) so they can be used directly with os.Chmod.
+func osModeToProto(mode os.FileMode) uint32 {
+	pm := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		pm |= protocol.ProtoModeSetuid
+	}
+	if mode&os.ModeSetgid != 0 {
+		pm |= protocol.ProtoModeSetgid
+	}
+	if mode&os.ModeSticky != 0 {
+		pm |= protocol.ProtoModeSticky
+	}
+	return pm
+}
+
 // NewDestination creates a remote Destination for the given ncp server.
 // The connection is not established until Open is called.
 func NewDestination(addr, basePath string) (*Destination, error) {
@@ -79,7 +96,7 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 	msg := &protocol.OpenMsg{
 		Path:  fullPath,
 		Flags: osFlagsToProto(os.O_WRONLY | os.O_CREATE | os.O_TRUNC),
-		Mode:  uint32(mode),
+		Mode:  osModeToProto(mode),
 		UID:   uint32(uid),
 		GID:   uint32(gid),
 	}
@@ -98,7 +115,7 @@ func (d *Destination) Mkdir(ctx context.Context, relPath string, mode os.FileMod
 	}
 	msg := &protocol.MkdirMsg{
 		Path: d.fullPath(relPath),
-		Mode: uint32(mode),
+		Mode: osModeToProto(mode),
 		UID:  uint32(uid),
 		GID:  uint32(gid),
 	}
