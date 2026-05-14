@@ -21,6 +21,28 @@ const (
 	MsgPread     uint8 = 0x0C
 	MsgStat      uint8 = 0x0D
 	MsgAbortFile uint8 = 0x0E
+	MsgChmod     uint8 = 0x0F
+	MsgChown     uint8 = 0x10
+)
+
+// Protocol-level OpenMsg flags (platform-independent).
+// These are NOT os.O_* values — they use fixed wire values
+// so macOS↔Linux works correctly.
+const (
+	ProtoO_RDONLY = 0x00
+	ProtoO_WRONLY = 0x01
+	ProtoO_RDWR   = 0x02
+	ProtoO_CREAT  = 0x04
+	ProtoO_TRUNC  = 0x08
+	ProtoO_APPEND = 0x10
+)
+
+// Protocol-level Mode bits (POSIX stat.st_mode permission bits).
+// Values are identical across all POSIX systems (Linux, macOS, *BSD).
+const (
+	ProtoModeSetuid uint32 = 0o4000
+	ProtoModeSetgid uint32 = 0o2000
+	ProtoModeSticky uint32 = 0o1000
 )
 
 // Server → Client message types (0x8X)
@@ -33,6 +55,8 @@ const (
 // --- Client → Server messages ---
 
 // OpenMsg is the payload for MsgOpen.
+// Flags uses protocol-level constants (ProtoO_*), NOT os.O_*.
+// Mode uses POSIX permission bits (0o0000–0o7777), NOT Go os.FileMode high bits.
 type OpenMsg struct {
 	Path  string
 	Flags uint32
@@ -322,6 +346,70 @@ func (m *SetxattrMsg) Decode(data []byte) error {
 	return nil
 }
 
+// ChmodMsg is the payload for MsgChmod.
+// Mode uses POSIX permission bits (0o0000–0o7777).
+type ChmodMsg struct {
+	Path string
+	Mode uint32
+}
+
+func (m *ChmodMsg) Encode() []byte {
+	pathBytes := []byte(m.Path)
+	n := 2 + len(pathBytes) + 4
+	b := make([]byte, n)
+	off := 0
+	binary.BigEndian.PutUint16(b[off:], uint16(len(pathBytes)))
+	off += 2
+	copy(b[off:], pathBytes)
+	off += len(pathBytes)
+	binary.BigEndian.PutUint32(b[off:], m.Mode)
+	return b
+}
+
+func (m *ChmodMsg) Decode(data []byte) error {
+	off := 0
+	pathLen := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	m.Path = string(data[off : off+pathLen])
+	off += pathLen
+	m.Mode = binary.BigEndian.Uint32(data[off:])
+	return nil
+}
+
+// ChownMsg is the payload for MsgChown.
+type ChownMsg struct {
+	Path string
+	UID  uint32
+	GID  uint32
+}
+
+func (m *ChownMsg) Encode() []byte {
+	pathBytes := []byte(m.Path)
+	n := 2 + len(pathBytes) + 4 + 4
+	b := make([]byte, n)
+	off := 0
+	binary.BigEndian.PutUint16(b[off:], uint16(len(pathBytes)))
+	off += 2
+	copy(b[off:], pathBytes)
+	off += len(pathBytes)
+	binary.BigEndian.PutUint32(b[off:], m.UID)
+	off += 4
+	binary.BigEndian.PutUint32(b[off:], m.GID)
+	return b
+}
+
+func (m *ChownMsg) Decode(data []byte) error {
+	off := 0
+	pathLen := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	m.Path = string(data[off : off+pathLen])
+	off += pathLen
+	m.UID = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	m.GID = binary.BigEndian.Uint32(data[off:])
+	return nil
+}
+
 // TaskDoneMsg is the payload for MsgTaskDone (empty).
 type TaskDoneMsg struct{}
 
@@ -503,22 +591,24 @@ func (m *StatMsg) Decode(data []byte) error {
 	return nil
 }
 
-// ListEntry is one record in a directory listing. No uid/gid for remote scenarios.
+// ListEntry is one record in a directory listing.
 type ListEntry struct {
 	RelPath    string
 	FileType   uint8
 	FileSize   int64
-	Mode       uint32
+	Mode       uint32 // POSIX permission bits (0o0000–0o7777), includes setuid/setgid/sticky
 	Mtime      int64
 	LinkTarget string
 	ETag       string
+	UID        uint32
+	GID        uint32
 }
 
 func (e *ListEntry) Encode() []byte {
 	relBytes := []byte(e.RelPath)
 	linkBytes := []byte(e.LinkTarget)
 	etagBytes := []byte(e.ETag)
-	n := 2 + len(relBytes) + 1 + 8 + 4 + 8 + 2 + len(linkBytes) + 2 + len(etagBytes)
+	n := 2 + len(relBytes) + 1 + 8 + 4 + 8 + 2 + len(linkBytes) + 2 + len(etagBytes) + 4 + 4
 	b := make([]byte, n)
 	off := 0
 	binary.BigEndian.PutUint16(b[off:], uint16(len(relBytes)))
@@ -540,6 +630,10 @@ func (e *ListEntry) Encode() []byte {
 	binary.BigEndian.PutUint16(b[off:], uint16(len(etagBytes)))
 	off += 2
 	copy(b[off:], etagBytes)
+	off += len(etagBytes)
+	binary.BigEndian.PutUint32(b[off:], e.UID)
+	off += 4
+	binary.BigEndian.PutUint32(b[off:], e.GID)
 	return b
 }
 
@@ -564,6 +658,10 @@ func (e *ListEntry) Decode(data []byte) error {
 	etagLen := int(binary.BigEndian.Uint16(data[off:]))
 	off += 2
 	e.ETag = string(data[off : off+etagLen])
+	off += etagLen
+	e.UID = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	e.GID = binary.BigEndian.Uint32(data[off:])
 	return nil
 }
 

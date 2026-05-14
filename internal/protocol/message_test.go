@@ -8,8 +8,8 @@ import (
 func TestOpenMsg_Roundtrip(t *testing.T) {
 	m := &OpenMsg{
 		Path:  "/data/dir/file.txt",
-		Flags: 0x241, // O_WRONLY | O_CREATE | O_TRUNC
-		Mode:  0644,
+		Flags: ProtoO_WRONLY | ProtoO_CREAT | ProtoO_TRUNC,
+		Mode:  0o644,
 		UID:   1000,
 		GID:   1000,
 	}
@@ -26,7 +26,7 @@ func TestOpenMsg_Roundtrip(t *testing.T) {
 		t.Fatalf("flags mismatch: got %d, want %d", m2.Flags, m.Flags)
 	}
 	if m2.Mode != m.Mode {
-		t.Fatalf("mode mismatch: got %d, want %d", m2.Mode, m.Mode)
+		t.Fatalf("mode mismatch: got %o, want %o", m2.Mode, m.Mode)
 	}
 	if m2.UID != m.UID {
 		t.Fatalf("uid mismatch: got %d, want %d", m2.UID, m.UID)
@@ -176,6 +176,41 @@ func TestSetxattrMsg_Roundtrip(t *testing.T) {
 	}
 	if m2.Value != m.Value {
 		t.Fatalf("value mismatch: got %q, want %q", m2.Value, m.Value)
+	}
+}
+
+func TestChmodMsg_Roundtrip(t *testing.T) {
+	m := &ChmodMsg{Path: "bin/sudo", Mode: 0o4755}
+	data := m.Encode()
+
+	m2 := &ChmodMsg{}
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m2.Path != m.Path {
+		t.Fatalf("path mismatch: got %q, want %q", m2.Path, m.Path)
+	}
+	if m2.Mode != m.Mode {
+		t.Fatalf("mode mismatch: got %o, want %o", m2.Mode, m.Mode)
+	}
+}
+
+func TestChownMsg_Roundtrip(t *testing.T) {
+	m := &ChownMsg{Path: "data/file.txt", UID: 1000, GID: 1000}
+	data := m.Encode()
+
+	m2 := &ChownMsg{}
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m2.Path != m.Path {
+		t.Fatalf("path mismatch: got %q, want %q", m2.Path, m.Path)
+	}
+	if m2.UID != m.UID {
+		t.Fatalf("uid mismatch: got %d, want %d", m2.UID, m.UID)
+	}
+	if m2.GID != m.GID {
+		t.Fatalf("gid mismatch: got %d, want %d", m2.GID, m.GID)
 	}
 }
 
@@ -341,10 +376,12 @@ func TestListEntry_Roundtrip(t *testing.T) {
 		RelPath:    "dir/file.txt",
 		FileType:   1,
 		FileSize:   1024,
-		Mode:       0644,
+		Mode:       0o644,
 		Mtime:      1700000000000000000,
 		LinkTarget: "",
 		ETag:       "abc123",
+		UID:        1000,
+		GID:        1000,
 	}
 	data := m.Encode()
 
@@ -369,6 +406,33 @@ func TestListEntry_Roundtrip(t *testing.T) {
 	}
 	if m2.ETag != m.ETag {
 		t.Fatalf("etag mismatch: got %q, want %q", m2.ETag, m.ETag)
+	}
+	if m2.UID != m.UID {
+		t.Fatalf("uid mismatch: got %d, want %d", m2.UID, m.UID)
+	}
+	if m2.GID != m.GID {
+		t.Fatalf("gid mismatch: got %d, want %d", m2.GID, m.GID)
+	}
+}
+
+func TestListEntry_SetuidMode(t *testing.T) {
+	m := &ListEntry{
+		RelPath:  "bin/sudo",
+		FileType: 1,
+		FileSize: 8192,
+		Mode:     0o4755, // setuid + rwxr-xr-x
+		Mtime:    1700000000000000000,
+		UID:      0,
+		GID:      0,
+	}
+	data := m.Encode()
+
+	m2 := &ListEntry{}
+	if err := m2.Decode(data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m2.Mode != 0o4755 {
+		t.Fatalf("mode mismatch: got %o, want 4755", m2.Mode)
 	}
 }
 
