@@ -61,6 +61,21 @@ func osModeToProto(mode os.FileMode) uint32 {
 	return pm
 }
 
+// protoToOsMode converts POSIX permission bits from the protocol to Go os.FileMode.
+func protoToOsMode(pm uint32) os.FileMode {
+	mode := os.FileMode(pm & 0o777)
+	if pm&protocol.ProtoModeSetuid != 0 {
+		mode |= os.ModeSetuid
+	}
+	if pm&protocol.ProtoModeSetgid != 0 {
+		mode |= os.ModeSetgid
+	}
+	if pm&protocol.ProtoModeSticky != 0 {
+		mode |= os.ModeSticky
+	}
+	return mode
+}
+
 type openWriteFile struct {
 	f    *os.File
 	path string
@@ -224,9 +239,13 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
 	}
 
-	f, err := os.OpenFile(fullPath, protoFlagsToOS(msg.Flags), os.FileMode(msg.Mode&0o777))
+	f, err := os.OpenFile(fullPath, protoFlagsToOS(msg.Flags), protoToOsMode(msg.Mode))
 	if err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	if msg.UID != 0 || msg.GID != 0 {
+		_ = os.Chown(fullPath, int(msg.UID), int(msg.GID))
 	}
 
 	fd := h.nextFD
@@ -339,8 +358,12 @@ func (h *ConnHandler) handleMkdir(frame *protocol.Frame) (uint8, []byte) {
 	}
 
 	fullPath := h.fullPath(msg.Path)
-	if err := os.MkdirAll(fullPath, os.FileMode(msg.Mode&0o777)); err != nil {
+	if err := os.MkdirAll(fullPath, protoToOsMode(msg.Mode)); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
+	}
+
+	if msg.UID != 0 || msg.GID != 0 {
+		_ = os.Chown(fullPath, int(msg.UID), int(msg.GID))
 	}
 
 	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
@@ -399,7 +422,8 @@ func (h *ConnHandler) handleChmod(frame *protocol.Frame) (uint8, []byte) {
 	}
 
 	fullPath := h.fullPath(msg.Path)
-	if err := os.Chmod(fullPath, os.FileMode(msg.Mode)); err != nil {
+	osMode := protoToOsMode(msg.Mode)
+	if err := os.Chmod(fullPath, osMode); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
 	}
 

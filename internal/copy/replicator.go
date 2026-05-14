@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -83,18 +84,36 @@ func (r *Replicator) copyOne(ctx context.Context, item storage.DiscoverItem) mod
 
 func (r *Replicator) copyDir(ctx context.Context, item storage.DiscoverItem) model.FileResult {
 	err := r.dst.Mkdir(ctx, item.RelPath, item.Attr.Mode, item.Attr.Uid, item.Attr.Gid)
-	status := model.CopyDone
 	if err != nil {
-		status = model.CopyError
+		return model.FileResult{
+			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    0,
+			CopyStatus:  model.CopyError,
+			Algorithm:   string(r.cksumAlgo),
+			Err:         err,
+			MetadataErr: err,
+		}
 	}
+
+	// Set directory metadata (mode, uid/gid, xattr).
+	// Mtime is not set here because writing files into a directory updates its mtime;
+	// directory mtime is restored after all children are done (see EnsureDirMtime / Job layer).
+	dirAttr := item.Attr
+	dirAttr.Mtime = time.Time{}
+	dirAttr.Atime = time.Time{}
+	var metaErr error
+	if err := r.dst.SetMetadata(ctx, item.RelPath, dirAttr); err != nil {
+		metaErr = err
+	}
+
 	return model.FileResult{
 		RelPath:     item.RelPath,
 		FileType:    item.FileType,
 		FileSize:    0,
-		CopyStatus:  status,
+		CopyStatus:  model.CopyDone,
 		Algorithm:   string(r.cksumAlgo),
-		Err:         err,
-		MetadataErr: err,
+		MetadataErr: metaErr,
 	}
 }
 
@@ -204,19 +223,17 @@ func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) mo
 
 	checksumHex := fmt.Sprintf("%x", checksumBytes)
 
-	// Preserve file mtime
-	if !item.Attr.Mtime.IsZero() {
-		if err := r.dst.SetMetadata(ctx, item.RelPath, storage.FileAttr{Mtime: item.Attr.Mtime}); err != nil {
-			return model.FileResult{
-				RelPath:     item.RelPath,
-				FileType:    item.FileType,
-				FileSize:    item.Size,
-				CopyStatus:  model.CopyError,
-				Checksum:    checksumHex,
-				Algorithm:   string(r.cksumAlgo),
-				Err:         err,
-				MetadataErr: err,
-			}
+	// Preserve file metadata (mode, uid/gid, atime, mtime, xattr)
+	if err := r.dst.SetMetadata(ctx, item.RelPath, item.Attr); err != nil {
+		return model.FileResult{
+			RelPath:     item.RelPath,
+			FileType:    item.FileType,
+			FileSize:    item.Size,
+			CopyStatus:  model.CopyError,
+			Checksum:    checksumHex,
+			Algorithm:   string(r.cksumAlgo),
+			Err:         err,
+			MetadataErr: err,
 		}
 	}
 

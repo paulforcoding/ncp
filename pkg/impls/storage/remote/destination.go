@@ -149,19 +149,19 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 	}
 	fullPath := d.fullPath(relPath)
 
-	// Chmod (including setuid/setgid/sticky)
-	if attr.Mode != 0 {
-		chmodMsg := &protocol.ChmodMsg{Path: fullPath, Mode: osModeToProto(attr.Mode)}
-		if _, err := d.conn.SendMsgRecvAck(protocol.MsgChmod, chmodMsg.Encode()); err != nil {
-			return fmt.Errorf("remote chmod %s: %w", relPath, err)
-		}
-	}
-
-	// Chown
+	// Chown must precede chmod: on POSIX systems, chown clears setuid/setgid bits.
 	if attr.Uid != 0 || attr.Gid != 0 {
 		chownMsg := &protocol.ChownMsg{Path: fullPath, UID: uint32(attr.Uid), GID: uint32(attr.Gid)}
 		if _, err := d.conn.SendMsgRecvAck(protocol.MsgChown, chownMsg.Encode()); err != nil {
 			return fmt.Errorf("remote chown %s: %w", relPath, err)
+		}
+	}
+
+	// Chmod (including setuid/setgid/sticky) — after chown so bits survive
+	if attr.Mode != 0 {
+		chmodMsg := &protocol.ChmodMsg{Path: fullPath, Mode: osModeToProto(attr.Mode)}
+		if _, err := d.conn.SendMsgRecvAck(protocol.MsgChmod, chmodMsg.Encode()); err != nil {
+			return fmt.Errorf("remote chmod %s: %w", relPath, err)
 		}
 	}
 

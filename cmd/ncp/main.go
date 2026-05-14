@@ -623,6 +623,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 // runCksum is the Composition Root for the cksum command.
 func runCksum(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "FileLogEnabled", "enable-FileLog", "disable-FileLog")
+	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 
 	// Bind cksum flags to Viper
 	_ = v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
@@ -1056,7 +1057,6 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 			return di.NewRemoteDestination(u.Host, u.Path)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
-		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
 	case "oss":
 		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
 			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
@@ -1065,7 +1065,6 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
-		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
 	default:
 		dstCfg := di.DestConfig{
 			DirectIO:    cfg.DirectIO,
