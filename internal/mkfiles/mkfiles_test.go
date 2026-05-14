@@ -96,7 +96,7 @@ func TestNestedDirectoryStructure(t *testing.T) {
 
 	dirCount := 0
 	fileCount := 0
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -106,7 +106,9 @@ func TestNestedDirectoryStructure(t *testing.T) {
 			fileCount++
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if dirCount != expectedDirs {
 		t.Fatalf("expected %d directories, got %d", expectedDirs, dirCount)
@@ -161,7 +163,7 @@ func TestFilesDistributedAcrossDirs(t *testing.T) {
 
 	// depth=2: root + 1 + 2 = 4 dirs, files should be in multiple dirs
 	dirsWithFiles := 0
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -179,7 +181,9 @@ func TestFilesDistributedAcrossDirs(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if dirsWithFiles < 2 {
 		t.Fatalf("expected files in at least 2 directories, got %d", dirsWithFiles)
