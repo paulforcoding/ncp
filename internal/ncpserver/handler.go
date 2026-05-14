@@ -183,6 +183,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 			respType, respPayload = h.handleUtime(frame)
 		case protocol.MsgSetxattr:
 			respType, respPayload = h.handleSetxattr(frame)
+		case protocol.MsgChmod:
+			respType, respPayload = h.handleChmod(frame)
+		case protocol.MsgChown:
+			respType, respPayload = h.handleChown(frame)
 		case protocol.MsgPread:
 			respType, respPayload = h.handlePread(frame)
 		case protocol.MsgStat:
@@ -382,6 +386,34 @@ func (h *ConnHandler) handleSetxattr(frame *protocol.Frame) (uint8, []byte) {
 
 	fullPath := h.fullPath(msg.Path)
 	if err := setXattr(fullPath, msg.Key, msg.Value); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
+	}
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
+}
+
+func (h *ConnHandler) handleChmod(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChmodMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	if err := os.Chmod(fullPath, os.FileMode(msg.Mode)); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
+	}
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
+}
+
+func (h *ConnHandler) handleChown(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChownMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	if err := os.Chown(fullPath, int(msg.UID), int(msg.GID)); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
 	}
 
