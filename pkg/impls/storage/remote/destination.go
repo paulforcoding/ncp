@@ -18,6 +18,27 @@ type Destination struct {
 
 var _ storage.Destination = (*Destination)(nil)
 
+// osFlagsToProto converts OS-specific os.O_* flags to protocol-level ProtoO_* flags.
+func osFlagsToProto(flags int) uint32 {
+	var pf uint32
+	if flags&os.O_WRONLY != 0 {
+		pf |= protocol.ProtoO_WRONLY
+	}
+	if flags&os.O_RDWR != 0 {
+		pf |= protocol.ProtoO_RDWR
+	}
+	if flags&os.O_CREATE != 0 {
+		pf |= protocol.ProtoO_CREAT
+	}
+	if flags&os.O_TRUNC != 0 {
+		pf |= protocol.ProtoO_TRUNC
+	}
+	if flags&os.O_APPEND != 0 {
+		pf |= protocol.ProtoO_APPEND
+	}
+	return pf
+}
+
 // NewDestination creates a remote Destination for the given ncp server.
 // The connection is not established until Open is called.
 func NewDestination(addr, basePath string) (*Destination, error) {
@@ -57,7 +78,7 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 	fullPath := d.fullPath(relPath)
 	msg := &protocol.OpenMsg{
 		Path:  fullPath,
-		Flags: uint32(os.O_WRONLY | os.O_CREATE | os.O_TRUNC),
+		Flags: osFlagsToProto(os.O_WRONLY | os.O_CREATE | os.O_TRUNC),
 		Mode:  uint32(mode),
 		UID:   uint32(uid),
 		GID:   uint32(gid),

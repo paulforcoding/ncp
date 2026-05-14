@@ -25,6 +25,27 @@ type ConnHandler struct {
 	nextFD     uint32
 }
 
+// protoFlagsToOS converts protocol-level ProtoO_* flags to OS-specific os.O_* flags.
+func protoFlagsToOS(pf uint32) int {
+	var flags int
+	if pf&protocol.ProtoO_WRONLY != 0 {
+		flags |= os.O_WRONLY
+	}
+	if pf&protocol.ProtoO_RDWR != 0 {
+		flags |= os.O_RDWR
+	}
+	if pf&protocol.ProtoO_CREAT != 0 {
+		flags |= os.O_CREATE
+	}
+	if pf&protocol.ProtoO_TRUNC != 0 {
+		flags |= os.O_TRUNC
+	}
+	if pf&protocol.ProtoO_APPEND != 0 {
+		flags |= os.O_APPEND
+	}
+	return flags
+}
+
 type openWriteFile struct {
 	f    *os.File
 	path string
@@ -175,7 +196,7 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
 	}
 
-	if msg.Flags == 0 { // O_RDONLY
+	if msg.Flags == 0 { // ProtoO_RDONLY
 		return h.handleOpenRead(msg)
 	}
 
@@ -184,7 +205,7 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
 	}
 
-	f, err := os.OpenFile(fullPath, int(msg.Flags), os.FileMode(msg.Mode))
+	f, err := os.OpenFile(fullPath, protoFlagsToOS(msg.Flags), os.FileMode(msg.Mode&0o777))
 	if err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
 	}

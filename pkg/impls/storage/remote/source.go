@@ -132,7 +132,7 @@ func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, 
 
 	msg := &protocol.OpenMsg{
 		Path:  relPath,
-		Flags: 0, // O_RDONLY
+		Flags: protocol.ProtoO_RDONLY,
 	}
 	ack, err := s.conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
 	if err != nil {
