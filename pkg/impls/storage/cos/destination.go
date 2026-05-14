@@ -176,7 +176,7 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 
 	merged := extractMetadata(resp.Header)
 	if attr.Mode != 0 {
-		merged[metaMode] = fmt.Sprintf("%04o", attr.Mode.Perm())
+		merged[metaMode] = fmt.Sprintf("%04o", osModeToProto(attr.Mode))
 	}
 	if attr.Uid != 0 || attr.Gid != 0 {
 		merged[metaUID] = fmt.Sprintf("%d", attr.Uid)
@@ -262,9 +262,24 @@ func (d *Destination) Stat(ctx context.Context, relPath string) (storage.Discove
 	return item, nil
 }
 
+// osModeToProto converts Go os.FileMode to POSIX permission bits.
+func osModeToProto(mode os.FileMode) uint32 {
+	pm := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		pm |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		pm |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		pm |= 0o1000
+	}
+	return pm
+}
+
 func posixMetadata(mode os.FileMode, uid, gid int) map[string]string {
 	return map[string]string{
-		metaMode: fmt.Sprintf("%04o", mode.Perm()),
+		metaMode: fmt.Sprintf("%04o", osModeToProto(mode)),
 		metaUID:  fmt.Sprintf("%d", uid),
 		metaGID:  fmt.Sprintf("%d", gid),
 	}
