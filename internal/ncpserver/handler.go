@@ -534,9 +534,3 @@ func equalChecksum(a, b []byte) bool {
 	}
 	return true
 }
-
-// setXattr sets an extended attribute on a file.
-// This is a no-op on platforms that don't support xattr.
-func setXattr(path, key, value string) error {
-	return nil
-}
