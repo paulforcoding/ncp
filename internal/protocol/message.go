@@ -45,6 +45,12 @@ const (
 	ProtoModeSticky uint32 = 0o1000
 )
 
+// DataMsg ResultCode values.
+const (
+	DataResultOK  uint16 = 0 // normal response
+	DataResultEOF uint16 = 1 // read reached end of file
+)
+
 // Server → Client message types (0x8X)
 const (
 	MsgAck   uint8 = 0x81

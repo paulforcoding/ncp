@@ -506,8 +506,13 @@ func (h *ConnHandler) handlePread(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
 	}
 
+	resultCode := protocol.DataResultOK
+	if err == io.EOF {
+		resultCode = protocol.DataResultEOF
+	}
+
 	resp := &protocol.DataMsg{
-		ResultCode: 0,
+		ResultCode: resultCode,
 		Data:       buf[:n],
 	}
 
