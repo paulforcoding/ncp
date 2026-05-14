@@ -19,7 +19,7 @@ ncp 是一个面向海量文件迁移的命令行工具，核心设计目标：
 | `ncp copy <src>... <dst>` | 复制文件（多源 → 单目标） |
 | `ncp cksum <src> <dst>` | 校验源和目标的数据一致性 |
 | `ncp resume <taskID>` | 自动检测 jobType 并恢复中断任务 |
-| `ncp serve` | 启动 ncp 协议服务器（单 task、单客户端、单模式，task 完成后自动退出） |
+| `ncp serve` | 启动 ncp 协议服务器（单 task、单模式，task 完成后自动退出；一个 ncp 客户端进程可开多个 replicator 并行连接） |
 | `ncp task list/show/delete` | 任务管理 |
 
 ---
