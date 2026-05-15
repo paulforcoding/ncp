@@ -46,8 +46,17 @@ func main() {
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
 		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
-		Args:  cobra.MinimumNArgs(2),
-		RunE:  runCopy,
+		Args: func(cmd *cobra.Command, args []string) error {
+			taskID, _ := cmd.Flags().GetString("task")
+			if taskID != "" {
+				return nil
+			}
+			if len(args) < 2 {
+				return fmt.Errorf("copy requires <src> and <dst> arguments when not using --task")
+			}
+			return nil
+		},
+		RunE: runCopy,
 	}
 
 	// Config flags (all fields overridable via CLI)
@@ -370,7 +379,17 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	// Select source setup matching DB relPath format:
+	// - Original copy task: relPaths have basename prefix → use setupCopyDepsMulti
+	// - Original cksum task: relPaths have no prefix → use setupCopyDepsPlain
+	var src storage.Source
+	var dst storage.Destination
+	var extraOpts []copy.JobOption
+	if firstRunJobType(meta) == task.JobTypeCksum {
+		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode)
+	} else {
+		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	}
 	if err != nil {
 		return err
 	}
@@ -533,7 +552,14 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	var src storage.Source
+	var dst storage.Destination
+	var extraOpts []copy.JobOption
+	if firstRunJobType(meta) == task.JobTypeCksum {
+		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode)
+	} else {
+		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	}
 	if err != nil {
 		return 1, err
 	}
@@ -584,7 +610,54 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+	// Select source setup matching DB relPath format:
+	// - Original cksum task: relPaths have no prefix → use setupCksumDeps
+	// - Original copy task: relPaths have basename prefix → src needs BasenamePrefixedSource wrapping
+	var src storage.Source
+	var dst storage.Source
+	var extraOpts []cksum.CksumJobOption
+	if firstRunJobType(meta) == task.JobTypeCopy {
+		// Copy-task DB has basename-prefixed relPaths (e.g. "project/file1").
+		// Source must use BasenamePrefixedSource to route correctly.
+		srcPaths := strings.Split(meta.SrcBase, ",")
+		var copySrc storage.Source
+		var copyExtra []copy.JobOption
+		copySrc, _, copyExtra, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+		if err != nil {
+			return 1, err
+		}
+		src = copySrc
+		// Convert copy.JobOption src/dst factories to cksum.CksumJobOption
+		for _, opt := range copyExtra {
+			_ = opt
+		}
+
+		// dst is a Source (for reading), not a Destination
+		dst, err = di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+		if err != nil {
+			return 1, fmt.Errorf("create destination source: %w", err)
+		}
+		du, _ := di.ParsePath(meta.DstBase)
+		if du.Scheme == "ncp" {
+			dstFactory := func(id int) (storage.Source, error) {
+				return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+			}
+			extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
+		}
+		// Src factory for remote sources
+		for _, sp := range srcPaths {
+			su, _ := di.ParsePath(sp)
+			if su.Scheme == "ncp" {
+				srcFactory := func(id int) (storage.Source, error) {
+					return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				}
+				extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
+				break
+			}
+		}
+	} else {
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+	}
 	if err != nil {
 		return 1, err
 	}
@@ -787,9 +860,45 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
-	if err != nil {
-		return err
+	var src storage.Source
+	var dst storage.Source
+	var extraOpts []cksum.CksumJobOption
+	if firstRunJobType(meta) == task.JobTypeCopy {
+		srcPaths := strings.Split(meta.SrcBase, ",")
+		var copySrc storage.Source
+		var copyExtra []copy.JobOption
+		copySrc, _, copyExtra, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+		if err != nil {
+			return err
+		}
+		src = copySrc
+		for _, opt := range copyExtra {
+			_ = opt
+		}
+
+		dst, err = di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+		if err != nil {
+			return fmt.Errorf("create destination source: %w", err)
+		}
+		du, _ := di.ParsePath(meta.DstBase)
+		if du.Scheme == "ncp" {
+			dstFactory := func(id int) (storage.Source, error) {
+				return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+			}
+			extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
+		}
+		for _, sp := range srcPaths {
+			su, _ := di.ParsePath(sp)
+			if su.Scheme == "ncp" {
+				srcFactory := func(id int) (storage.Source, error) {
+					return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				}
+				extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
+				break
+			}
+		}
+	} else {
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
 	}
 
 	for _, s := range []storage.Source{src, dst} {
@@ -1057,7 +1166,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 			return di.NewRemoteDestination(u.Host, u.Path)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
-	case "oss":
+	case "oss", "cos", "obs":
 		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
 			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
 		}
@@ -1091,6 +1200,66 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 	}
 
 	return src, dst, extraOpts, nil
+}
+
+// setupCopyDepsPlain creates source/destination deps for copy without
+// BasenamePrefixedSource wrapping. Used when resuming a copy from a cksum
+// task whose DB relPaths do not include the basename prefix.
+func setupCopyDepsPlain(cfg *config.Config, srcPath, dstPath string, srcMode uint8) (storage.Source, storage.Destination, []copy.JobOption, error) {
+	src, err := di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create source %s: %w", srcPath, err)
+	}
+
+	var extraOpts []copy.JobOption
+	var dst storage.Destination
+
+	u, _ := di.ParsePath(dstPath)
+	switch u.Scheme {
+	case "ncp":
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewRemoteDestination(u.Host, u.Path)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
+	case "oss", "cos", "obs":
+		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
+			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
+		}
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
+	default:
+		dstCfg := di.DestConfig{
+			DirectIO:    cfg.DirectIO,
+			SyncWrites:  cfg.SyncWrites,
+			IOSize:      cfg.IOSize,
+			IOSizeTiers: cfg.IOSizeTiers,
+		}
+		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("create destination: %w", err)
+		}
+	}
+
+	// Set srcFactory for remote sources
+	su, _ := di.ParsePath(srcPath)
+	if su.Scheme == "ncp" {
+		srcFactory := func(id int) (storage.Source, error) {
+			return di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
+		}
+		extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
+	}
+
+	return src, dst, extraOpts, nil
+}
+
+// firstRunJobType returns the job type of the first run in the task's meta.
+func firstRunJobType(meta *task.Meta) task.JobType {
+	if len(meta.Runs) == 0 {
+		return task.JobTypeCopy
+	}
+	return meta.Runs[0].JobType
 }
 
 // loadResumeConfig loads config from a resume/task command's Viper flags.

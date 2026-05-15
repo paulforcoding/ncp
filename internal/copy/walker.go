@@ -206,10 +206,7 @@ func (w *Walker) ResumeFromDBForCksum(ctx context.Context, cksumCh chan<- storag
 		if isInternalKey(key) {
 			continue
 		}
-		cs, cks := it.Value()
-		if cs != model.CopyDone {
-			continue
-		}
+		_, cks := it.Value()
 		if cks == model.CksumPass {
 			continue
 		}

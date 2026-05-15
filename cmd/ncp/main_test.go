@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/zp001/ncp/internal/config"
+	"github.com/zp001/ncp/internal/task"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -57,5 +58,37 @@ func TestValidateCksumAlgoForOSS(t *testing.T) {
 func TestVersionNotEmpty(t *testing.T) {
 	if version == "" {
 		t.Error("version should not be empty at link time")
+	}
+}
+
+func TestFirstRunJobType(t *testing.T) {
+	tests := []struct {
+		name string
+		meta *task.Meta
+		want task.JobType
+	}{
+		{
+			"copy first",
+			&task.Meta{Runs: []task.RunRecord{{JobType: task.JobTypeCopy}, {JobType: task.JobTypeCksum}}},
+			task.JobTypeCopy,
+		},
+		{
+			"cksum first",
+			&task.Meta{Runs: []task.RunRecord{{JobType: task.JobTypeCksum}, {JobType: task.JobTypeCopy}}},
+			task.JobTypeCksum,
+		},
+		{
+			"no runs defaults to copy",
+			&task.Meta{Runs: nil},
+			task.JobTypeCopy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := firstRunJobType(tt.meta)
+			if got != tt.want {
+				t.Errorf("firstRunJobType() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
