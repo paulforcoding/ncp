@@ -38,13 +38,10 @@ type SourceConfig struct {
 
 // NewSource creates a COS Source.
 func NewSource(cfg SourceConfig) (*Source, error) {
-	baseURLStr := cfg.Endpoint
-	if baseURLStr == "" {
-		if cfg.Region == "" {
-			return nil, fmt.Errorf("cos: Region is required when Endpoint is not set")
-		}
-		baseURLStr = fmt.Sprintf("https://%s.cos.%s.myqcloud.com", cfg.Bucket, cfg.Region)
+	if cfg.Region == "" {
+		return nil, fmt.Errorf("cos: Region is required")
 	}
+	baseURLStr := fmt.Sprintf("https://%s.cos.%s.myqcloud.com", cfg.Bucket, cfg.Region)
 	u, err := url.Parse(baseURLStr)
 	if err != nil {
 		return nil, fmt.Errorf("cos: invalid base URL %q: %w", baseURLStr, err)
