@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
@@ -194,6 +195,59 @@ func TestSourceBasename_OSSWholeBucket(t *testing.T) {
 	if got != "mybucket" {
 		t.Fatalf("got %q, want mybucket", got)
 	}
+}
+
+func TestBasenamePrefixedSource_OpenRoutesCorrectly(t *testing.T) {
+	srcA := &mockSource{base: "/data/a", items: []storage.DiscoverItem{{RelPath: "f1.txt"}}}
+	srcB := &mockSource{base: "/data/b", items: []storage.DiscoverItem{{RelPath: "f2.txt"}}}
+
+	mockOpenA := &mockOpenSource{mockSource: srcA, openFunc: func(relPath string) (storage.FileReader, error) {
+		return nil, fmt.Errorf("mock open: %s", relPath)
+	}}
+	bps, err := NewBasenamePrefixedSource([]storage.Source{mockOpenA, srcB}, []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// Open "a/f1.txt" should route to srcA with stripped path "f1.txt"
+	_, err = bps.Open(context.Background(), "a/f1.txt")
+	if err == nil {
+		t.Fatal("expected error from mock open")
+	}
+	if !strings.Contains(err.Error(), "f1.txt") {
+		t.Errorf("expected stripped relPath 'f1.txt' in error, got: %v", err)
+	}
+}
+
+func TestBasenamePrefixedSource_StatRoutesCorrectly(t *testing.T) {
+	srcA := &mockSource{base: "/data/a", items: []storage.DiscoverItem{{RelPath: "f1.txt"}}}
+	srcB := &mockSource{base: "/data/b", items: []storage.DiscoverItem{{RelPath: "f2.txt"}}}
+
+	bps, err := NewBasenamePrefixedSource([]storage.Source{srcA, srcB}, []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// Stat preserves the original relPath (with basename prefix)
+	item, err := bps.Stat(context.Background(), "a/f1.txt")
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if item.RelPath != "a/f1.txt" {
+		t.Fatalf("stat relPath: got %q, want a/f1.txt", item.RelPath)
+	}
+}
+
+type mockOpenSource struct {
+	*mockSource
+	openFunc func(string) (storage.FileReader, error)
+}
+
+func (m *mockOpenSource) Open(ctx context.Context, relPath string) (storage.FileReader, error) {
+	if m.openFunc != nil {
+		return m.openFunc(relPath)
+	}
+	return nil, fmt.Errorf("mock open: %s", relPath)
 }
 
 func TestSourceBasename_OSSNoTrailingSlash(t *testing.T) {

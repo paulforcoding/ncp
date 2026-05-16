@@ -135,6 +135,59 @@ func TestParsePath_OBS(t *testing.T) {
 	}
 }
 
+func TestParseCOSURL(t *testing.T) {
+	tests := []struct {
+		raw        string
+		wantBucket string
+		wantPrefix string
+	}{
+		{"cos://mybucket-1250000000/path/to/dir", "mybucket-1250000000", "path/to/dir/"},
+		{"cos://mybucket-1250000000/", "mybucket-1250000000", ""},
+		{"cos://mybucket-1250000000", "mybucket-1250000000", ""},
+		{"cos://mybucket-1250000000/deep/nested/path", "mybucket-1250000000", "deep/nested/path/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			u, err := ParsePath(tt.raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			bucket, prefix := parseCOSURL(u)
+			if bucket != tt.wantBucket {
+				t.Fatalf("bucket: got %q, want %q", bucket, tt.wantBucket)
+			}
+			if prefix != tt.wantPrefix {
+				t.Fatalf("prefix: got %q, want %q", prefix, tt.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestNewSourceWithRemoteMode_NCP(t *testing.T) {
+	// ncp:// URLs should create remote.Source with the given mode.
+	src, err := NewSourceWithRemoteMode("ncp://host:9900/data", nil, 3) // ModeSourceNoWalker
+	if err != nil {
+		t.Fatalf("NewSourceWithRemoteMode: %v", err)
+	}
+	gotType := fmt.Sprintf("%T", src)
+	if gotType != "*remote.Source" {
+		t.Fatalf("type: got %q, want *remote.Source", gotType)
+	}
+}
+
+func TestNewSourceWithRemoteMode_NonNCP(t *testing.T) {
+	// Non-ncp URLs should fall through to NewSource.
+	src, err := NewSourceWithRemoteMode(t.TempDir(), nil, 3)
+	if err != nil {
+		t.Fatalf("NewSourceWithRemoteMode: %v", err)
+	}
+	gotType := fmt.Sprintf("%T", src)
+	if gotType != "*local.Source" {
+		t.Fatalf("type: got %q, want *local.Source", gotType)
+	}
+}
+
 func TestParseOBSURL(t *testing.T) {
 	tests := []struct {
 		raw        string
