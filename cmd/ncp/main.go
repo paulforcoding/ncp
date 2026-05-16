@@ -74,7 +74,7 @@ func main() {
 	copyCmd.Flags().Int("IOSize", 0, "IO size in bytes (0 = use tiered default)")
 	copyCmd.Flags().Bool("enable-EnsureDirMtime", true, "Restore directory mtime after copy")
 	copyCmd.Flags().Bool("disable-EnsureDirMtime", false, "Do not restore directory mtime")
-	copyCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	copyCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	copyCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	copyCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
@@ -113,7 +113,7 @@ func main() {
 	resumeCmd.Flags().Bool("disable-FileLog", false, "Disable FileLog output")
 	resumeCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	resumeCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
-	resumeCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	resumeCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
@@ -132,7 +132,7 @@ func main() {
 		Args:  cobra.NoArgs,
 		RunE:  runTaskList,
 	}
-	taskListCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskListCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskShowCmd := &cobra.Command{
 		Use:   "show <taskID>",
@@ -141,7 +141,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runTaskShow,
 	}
-	taskShowCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskShowCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskDeleteCmd := &cobra.Command{
 		Use:   "delete <taskID>",
@@ -150,7 +150,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runTaskDelete,
 	}
-	taskDeleteCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskDeleteCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
 
@@ -180,7 +180,7 @@ func main() {
 	cksumCmd.Flags().Bool("disable-FileLog", false, "Disable FileLog output")
 	cksumCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	cksumCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
-	cksumCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	cksumCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
@@ -1187,12 +1187,20 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 		}
 	}
 
-	// Set srcFactory for remote sources
+	// Set srcFactory for remote sources.
+	// Must wrap in BasenamePrefixedSource so that the replicator-side
+	// source strips the basename prefix from walker-produced relPaths,
+	// matching the walker-side j.src wrapping.
 	for _, sp := range srcPaths {
 		su, _ := di.ParsePath(sp)
 		if su.Scheme == "ncp" {
 			srcFactory := func(id int) (storage.Source, error) {
-				return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				rawSrc, err := di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				if err != nil {
+					return nil, err
+				}
+				basename := di.SourceBasename(rawSrc, sp)
+				return di.NewBasenamePrefixedSource([]storage.Source{rawSrc}, []string{basename})
 			}
 			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
 			break

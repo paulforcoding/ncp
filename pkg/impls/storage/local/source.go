@@ -26,6 +26,9 @@ func NewSource(base string) (*Source, error) {
 	if clean == "/" {
 		return nil, fmt.Errorf("local source: copying the entire filesystem root is not allowed")
 	}
+	if _, err := os.Stat(abs); err != nil {
+		return nil, fmt.Errorf("local source %s: %w", abs, err)
+	}
 	return &Source{base: abs}, nil
 }
 

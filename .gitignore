@@ -36,6 +36,8 @@ __pycache__/
 
 .aiinputs/
 .aireports/
+.aifoundbugs/
+ncp_config.json
 .claude/
 _bmad-output/
 _bmad/
