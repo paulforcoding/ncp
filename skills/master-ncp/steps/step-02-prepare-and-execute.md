@@ -15,7 +15,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
   [--cksum-algorithm md5|xxh64] \
   [--ProgressStorePath /tmp/ncp_progress_store] \
   [--FileLogOutput /tmp/ncp_file_log.json] \
-  [--FileLogInterval 5] \
+  [--FileLogInterval 10] \
   [--no-skip-by-mtime]   # 仅当用户要禁用跳过时
 ```
 
@@ -27,7 +27,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
 - 只包含与默认值不同或必需的参数
 - 始终包含 `--ProgressStorePath` 和 `--FileLogOutput`，以便监控进度
 - 将 `--FileLogOutput` 设为已知文件路径（默认：`/tmp/ncp_file_log.json`）— 这是监控进度的关键
-- 将 `--FileLogInterval` 设为合理值（默认 5 秒即可；超大规模任务可用 10 以减少噪音）
+- 将 `--FileLogInterval` 默认设为 **10 秒**（平衡进度可见性和日志量）
 - OSS / COS / OBS URL 缺 `<profile>@` → ncp 启动期立即报错。在执行前用 `ncp config show --profile <name>` 确认 profile 存在(详见步骤 1.2)。
 
 ## 2.2 用户确认
@@ -42,7 +42,7 @@ ncp copy <src1> [<src2> ...] <dst_parent> \
     --ChannelBuf 2000000 \
     --ProgressStorePath /tmp/ncp_progress_store \
     --FileLogOutput /tmp/ncp_file_log.json \
-    --FileLogInterval 5
+    --FileLogInterval 10
 
 结果将在 ncp://server:9900/backup/project/... 下
 是否执行？（是/否）
@@ -69,7 +69,9 @@ ls -t /tmp/ncp_progress_store | head -1
 
 如果进程立即失败（退出码 != 0），从输出诊断错误并报告给用户。
 
-## 2.4 监控进度
+## 2.4 监控进度（强制性）
+
+> **进度监控是强制性步骤，不可跳过。** 这是 ncp 面向 AI Agent 设计的核心能力 — 通过结构化 NDJSON FileLog 让 Agent 实时感知复制状态。
 
 开始监控 FileLog 中的 `progress_summary` 事件。使用 Monitor 工具 tail 文件并过滤进度事件：
 
@@ -129,7 +131,7 @@ df -h /tmp/ncp_progress_store /tmp/ncp_file_log.json 2>/dev/null | tail -n +2
 
 通过 FileLog 的 `progress_summary` 事件检测 ncp 是否卡住。
 
-**判断标准：** 连续 N 个 `progress_summary` 间隔内（N = 3，即约 15 秒 @ FileLogInterval=5），以下指标全部无变化：
+**判断标准：** 连续 N 个 `progress_summary` 间隔内（N = 3，即约 30 秒 @ FileLogInterval=10），以下指标全部无变化：
 - `replicator.filesCopied` 不变
 - `replicator.bytesCopied` 不变
 - `dbWriter.totalProcessed` 不变

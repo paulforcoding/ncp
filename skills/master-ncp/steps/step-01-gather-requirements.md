@@ -4,9 +4,10 @@
 
 ## 1.1 确定源路径
 
-向用户询问源路径。ncp 支持多个源（仅限本地路径）。
+向用户询问源路径。ncp 支持多个源（仅限本地路径可多源混用；云存储和 ncp:// 不支持混用）。
 
 - **本地路径**：如 `/data/project`、`/home/user/docs`
+- **ncp://**：如 `ncp://server:9900/data/`（可作为源或目标）
 - **OSS 路径**：如 `oss://prod@my-bucket/data/`(必须带 `<profile>@` 前缀,见 1.2)
 - **COS 路径**：如 `cos://prod@my-bucket-1250000000/data/`(必须带 `<profile>@` 前缀,见 1.2)
 - **OBS 路径**：如 `obs://prod@my-bucket/data/`(必须带 `<profile>@` 前缀,见 1.2)
@@ -25,11 +26,14 @@
 | COS | `cos://prod@bucket-1250000000/backup/` | URL 必须带 `<profile>@`,profile 在 `ncp_config.json` 中已定义。dst 是父目录 |
 | OBS | `obs://prod@bucket/backup/` | URL 必须带 `<profile>@`,profile 在 `ncp_config.json` 中已定义。dst 是父目录 |
 
-**路径语义：** `ncp copy /data/project /backup/` 的结果在 `/backup/project/...`，不是 `/backup/...`。dst 是父目录，basename 由 ncp 自动添加。如果用户说"复制到 /backup/project"，实际应给 dst = `/backup/`。
+**路径语义：**`ncp copy /data/project /backup/` 的结果在 `/backup/project/...`，不是 `/backup/...`。dst 是父目录，ncp 自动以源 basename 创建子目录。向用户展示时直接说出最终落点，如"目标写 `ncp://host:port/root/`，文件最终落在 `/root/crewAI/` 下"。
 
-**如果目标是 `ncp://`：**
-- 确认远程服务器已运行 `ncp serve`
-- 提示："远程 ncp 服务器是否已启动？如未启动，需先运行：`ncp serve --base <dir> --listen :9900`"
+**如果源或目标是 `ncp://`：**
+- **不得询问用户** ncp serve 是否已启动、本机 ncp 二进制是否已编译 — 自行检测。
+- 检测远程 serve 是否在线：`nc -z <host> <port>` 或 `timeout 2 bash -c "echo >/dev/tcp/<host>/<port>" 2>&1`。
+- 若 serve 不在线：自行将 ncp 交叉编译为 Linux amd64 版本（`GOOS=linux GOARCH=amd64 go build -o ncp-linux ./cmd/ncp/`），scp 部署到远程，然后 `ssh <host> "nohup ncp serve --listen :<port> > /tmp/ncp-serve.log 2>&1 &"`。
+- 本机二进制不存在则执行 `make build`。
+- 远程 `ncp serve` 的参数只有 `--listen`（默认 :9900）和 `--serve-temp-dir`（默认 /tmp/ncpserve），**没有 `--base`**。目标路径由客户端在 URL 中指定（`ncp://host:port/path`）。
 
 **如果源或目标是 `oss://`、`cos://` 或 `obs://`：**
 
@@ -118,7 +122,7 @@ vm_stat | head -10 2>/dev/null || free -m 2>/dev/null || echo 4096
 | `--skip-by-mtime` | true（启用） | 仅当用户想强制全量复制时 |
 | `--enable-SyncWrites` | true | 仅当用户追求极致速度且可接受数据丢失风险时 |
 | `--enable-DirectIO` | false | 仅当用户有特定 IO 需求时 |
-| `--FileLogInterval` | 5 | 通常默认即可 |
+| `--FileLogInterval` | 10 | 技能统一设为 10 秒，平衡可见性与日志量 |
 
 **不要询问用户未提及的参数。** 使用默认值即可。
 

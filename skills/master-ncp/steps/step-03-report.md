@@ -78,6 +78,8 @@ grep '"file_complete"' /tmp/ncp_file_log.json | jq 'select(.result=="error")'
 
 以具体命令的形式展示，或主动提出代为执行。
 
+> **如果目标为 `ncp://`：** `ncp serve` 在单 task 完成后立即退出。执行 `cksum --task` 或 `resume` 前，必须先重新启动远程 serve：`ssh <host> "nohup ncp serve --listen :<port> > /tmp/ncp-serve.log 2>&1 &"`。自动检测并处理，不要询问用户。
+
 ## 3.4 清理（可选）
 
 用户同意后，清理临时文件：
