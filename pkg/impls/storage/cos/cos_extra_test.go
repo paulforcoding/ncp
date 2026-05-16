@@ -77,8 +77,8 @@ func TestNewDestination_RegionInferred(t *testing.T) {
 func TestNewDestination_RetryConfigPassthrough(t *testing.T) {
 	custom := RetryConfig{MaxAttempts: 7, InitialWait: 0.1, MaxWait: 1, Multiplier: 2, Jitter: 0.1}
 	d, err := NewDestination(Config{
-		Region:   "ap-beijing",
-		AK:       "ak", SK: "sk", Bucket: "bkt",
+		Region: "ap-beijing",
+		AK:     "ak", SK: "sk", Bucket: "bkt",
 		RetryCfg: custom,
 	})
 	if err != nil {
