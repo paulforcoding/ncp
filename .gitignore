@@ -1,6 +1,7 @@
 # Binaries
 /ncp
 /ncp-linux-amd64
+/ncp-linux
 
 # Progress storage
 /progress/
