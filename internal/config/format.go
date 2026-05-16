@@ -68,21 +68,21 @@ func FormatConfig(cfg *Config, usedProfiles []string) string {
 	var b strings.Builder
 
 	b.WriteString("=== General ===\n")
-	b.WriteString(fmt.Sprintf("CopyParallelism:   %d\n", cfg.CopyParallelism))
-	b.WriteString(fmt.Sprintf("ProgramLogLevel:   %s\n", cfg.ProgramLogLevel))
-	b.WriteString(fmt.Sprintf("ProgramLogOutput:  %s\n", cfg.ProgramLogOutput))
-	b.WriteString(fmt.Sprintf("FileLogEnabled:    %t\n", cfg.FileLogEnabled))
-	b.WriteString(fmt.Sprintf("FileLogOutput:     %s\n", cfg.FileLogOutput))
-	b.WriteString(fmt.Sprintf("FileLogInterval:   %d\n", cfg.FileLogInterval))
-	b.WriteString(fmt.Sprintf("DirectIO:          %t\n", cfg.DirectIO))
-	b.WriteString(fmt.Sprintf("SyncWrites:        %t\n", cfg.SyncWrites))
-	b.WriteString(fmt.Sprintf("IOSize:            %d\n", cfg.IOSize))
-	b.WriteString(fmt.Sprintf("EnsureDirMtime:    %t\n", cfg.EnsureDirMtime))
-	b.WriteString(fmt.Sprintf("ProgressStorePath: %s\n", cfg.ProgressStorePath))
-	b.WriteString(fmt.Sprintf("ServerListenAddr:  %s\n", cfg.ServerListenAddr))
-	b.WriteString(fmt.Sprintf("CksumAlgorithm:    %s\n", cfg.CksumAlgorithm))
-	b.WriteString(fmt.Sprintf("SkipByMtime:       %t\n", cfg.SkipByMtime))
-	b.WriteString(fmt.Sprintf("ChannelBuf:        %d\n", cfg.ChannelBuf))
+	fmt.Fprintf(&b, "CopyParallelism:   %d\n", cfg.CopyParallelism)
+	fmt.Fprintf(&b, "ProgramLogLevel:   %s\n", cfg.ProgramLogLevel)
+	fmt.Fprintf(&b, "ProgramLogOutput:  %s\n", cfg.ProgramLogOutput)
+	fmt.Fprintf(&b, "FileLogEnabled:    %t\n", cfg.FileLogEnabled)
+	fmt.Fprintf(&b, "FileLogOutput:     %s\n", cfg.FileLogOutput)
+	fmt.Fprintf(&b, "FileLogInterval:   %d\n", cfg.FileLogInterval)
+	fmt.Fprintf(&b, "DirectIO:          %t\n", cfg.DirectIO)
+	fmt.Fprintf(&b, "SyncWrites:        %t\n", cfg.SyncWrites)
+	fmt.Fprintf(&b, "IOSize:            %d\n", cfg.IOSize)
+	fmt.Fprintf(&b, "EnsureDirMtime:    %t\n", cfg.EnsureDirMtime)
+	fmt.Fprintf(&b, "ProgressStorePath: %s\n", cfg.ProgressStorePath)
+	fmt.Fprintf(&b, "ServerListenAddr:  %s\n", cfg.ServerListenAddr)
+	fmt.Fprintf(&b, "CksumAlgorithm:    %s\n", cfg.CksumAlgorithm)
+	fmt.Fprintf(&b, "SkipByMtime:       %t\n", cfg.SkipByMtime)
+	fmt.Fprintf(&b, "ChannelBuf:        %d\n", cfg.ChannelBuf)
 	b.WriteString("\n")
 
 	b.WriteString("=== Profiles ===\n")
@@ -102,16 +102,16 @@ func FormatConfig(cfg *Config, usedProfiles []string) string {
 
 		for _, name := range names {
 			p := cfg.Profiles[name]
-			b.WriteString(fmt.Sprintf("%s:\n", name))
-			b.WriteString(fmt.Sprintf("  Provider: %s\n", p.Provider))
+			fmt.Fprintf(&b, "%s:\n", name)
+			fmt.Fprintf(&b, "  Provider: %s\n", p.Provider)
 			if p.Endpoint != "" {
-				b.WriteString(fmt.Sprintf("  Endpoint: %s\n", p.Endpoint))
+				fmt.Fprintf(&b, "  Endpoint: %s\n", p.Endpoint)
 			}
 			if p.Region != "" {
-				b.WriteString(fmt.Sprintf("  Region:   %s\n", p.Region))
+				fmt.Fprintf(&b, "  Region:   %s\n", p.Region)
 			}
-			b.WriteString(fmt.Sprintf("  AK:       %s\n", MaskSecret(p.AK)))
-			b.WriteString(fmt.Sprintf("  SK:       %s\n", MaskSecret(p.SK)))
+			fmt.Fprintf(&b, "  AK:       %s\n", MaskSecret(p.AK))
+			fmt.Fprintf(&b, "  SK:       %s\n", MaskSecret(p.SK))
 			if _, ok := usedSet[name]; ok {
 				b.WriteString("  [used by this operation]\n")
 			}
@@ -132,7 +132,7 @@ func FormatConfigSources() string {
 		if err == nil {
 			status = "found"
 		}
-		b.WriteString(fmt.Sprintf("%-26s %s\n", path, status))
+		fmt.Fprintf(&b, "%-26s %s\n", path, status)
 	}
 	return b.String()
 }

@@ -657,6 +657,9 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 		}
 	} else {
 		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		if err != nil {
+			return 1, err
+		}
 	}
 	if err != nil {
 		return 1, err
@@ -899,6 +902,9 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 		}
 	} else {
 		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, s := range []storage.Source{src, dst} {
