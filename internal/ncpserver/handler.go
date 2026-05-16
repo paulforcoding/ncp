@@ -25,6 +25,57 @@ type ConnHandler struct {
 	nextFD     uint32
 }
 
+// protoFlagsToOS converts protocol-level ProtoO_* flags to OS-specific os.O_* flags.
+func protoFlagsToOS(pf uint32) int {
+	var flags int
+	if pf&protocol.ProtoO_WRONLY != 0 {
+		flags |= os.O_WRONLY
+	}
+	if pf&protocol.ProtoO_RDWR != 0 {
+		flags |= os.O_RDWR
+	}
+	if pf&protocol.ProtoO_CREAT != 0 {
+		flags |= os.O_CREATE
+	}
+	if pf&protocol.ProtoO_TRUNC != 0 {
+		flags |= os.O_TRUNC
+	}
+	if pf&protocol.ProtoO_APPEND != 0 {
+		flags |= os.O_APPEND
+	}
+	return flags
+}
+
+// osModeToProto converts Go os.FileMode to POSIX permission bits for the protocol.
+func osModeToProto(mode os.FileMode) uint32 {
+	pm := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		pm |= protocol.ProtoModeSetuid
+	}
+	if mode&os.ModeSetgid != 0 {
+		pm |= protocol.ProtoModeSetgid
+	}
+	if mode&os.ModeSticky != 0 {
+		pm |= protocol.ProtoModeSticky
+	}
+	return pm
+}
+
+// protoToOsMode converts POSIX permission bits from the protocol to Go os.FileMode.
+func protoToOsMode(pm uint32) os.FileMode {
+	mode := os.FileMode(pm & 0o777)
+	if pm&protocol.ProtoModeSetuid != 0 {
+		mode |= os.ModeSetuid
+	}
+	if pm&protocol.ProtoModeSetgid != 0 {
+		mode |= os.ModeSetgid
+	}
+	if pm&protocol.ProtoModeSticky != 0 {
+		mode |= os.ModeSticky
+	}
+	return mode
+}
+
 type openWriteFile struct {
 	f    *os.File
 	path string
@@ -147,6 +198,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 			respType, respPayload = h.handleUtime(frame)
 		case protocol.MsgSetxattr:
 			respType, respPayload = h.handleSetxattr(frame)
+		case protocol.MsgChmod:
+			respType, respPayload = h.handleChmod(frame)
+		case protocol.MsgChown:
+			respType, respPayload = h.handleChown(frame)
 		case protocol.MsgPread:
 			respType, respPayload = h.handlePread(frame)
 		case protocol.MsgStat:
@@ -175,7 +230,7 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
 	}
 
-	if msg.Flags == 0 { // O_RDONLY
+	if msg.Flags == 0 { // ProtoO_RDONLY
 		return h.handleOpenRead(msg)
 	}
 
@@ -184,9 +239,13 @@ func (h *ConnHandler) handleOpen(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
 	}
 
-	f, err := os.OpenFile(fullPath, int(msg.Flags), os.FileMode(msg.Mode))
+	f, err := os.OpenFile(fullPath, protoFlagsToOS(msg.Flags), protoToOsMode(msg.Mode))
 	if err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	if msg.UID != 0 || msg.GID != 0 {
+		_ = os.Chown(fullPath, int(msg.UID), int(msg.GID))
 	}
 
 	fd := h.nextFD
@@ -299,8 +358,12 @@ func (h *ConnHandler) handleMkdir(frame *protocol.Frame) (uint8, []byte) {
 	}
 
 	fullPath := h.fullPath(msg.Path)
-	if err := os.MkdirAll(fullPath, os.FileMode(msg.Mode)); err != nil {
+	if err := os.MkdirAll(fullPath, protoToOsMode(msg.Mode)); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMkdir, err.Error())
+	}
+
+	if msg.UID != 0 || msg.GID != 0 {
+		_ = os.Chown(fullPath, int(msg.UID), int(msg.GID))
 	}
 
 	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
@@ -346,6 +409,35 @@ func (h *ConnHandler) handleSetxattr(frame *protocol.Frame) (uint8, []byte) {
 
 	fullPath := h.fullPath(msg.Path)
 	if err := setXattr(fullPath, msg.Key, msg.Value); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
+	}
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
+}
+
+func (h *ConnHandler) handleChmod(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChmodMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	osMode := protoToOsMode(msg.Mode)
+	if err := os.Chmod(fullPath, osMode); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
+	}
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
+}
+
+func (h *ConnHandler) handleChown(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChownMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	if err := os.Chown(fullPath, int(msg.UID), int(msg.GID)); err != nil {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileMetadata, err.Error())
 	}
 
@@ -414,8 +506,13 @@ func (h *ConnHandler) handlePread(frame *protocol.Frame) (uint8, []byte) {
 		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
 	}
 
+	resultCode := protocol.DataResultOK
+	if err == io.EOF {
+		resultCode = protocol.DataResultEOF
+	}
+
 	resp := &protocol.DataMsg{
-		ResultCode: 0,
+		ResultCode: resultCode,
 		Data:       buf[:n],
 	}
 
@@ -465,10 +562,4 @@ func equalChecksum(a, b []byte) bool {
 		}
 	}
 	return true
-}
-
-// setXattr sets an extended attribute on a file.
-// This is a no-op on platforms that don't support xattr.
-func setXattr(path, key, value string) error {
-	return nil
 }

@@ -29,8 +29,10 @@ func TestNewSource_RegionInferred(t *testing.T) {
 }
 
 func TestNewSource_ExplicitEndpoint(t *testing.T) {
+	// Endpoint is ignored; BucketURL is always built from Bucket+Region.
 	s, err := NewSource(SourceConfig{
 		Endpoint: "https://bkt.cos.ap-shanghai.myqcloud.com",
+		Region:   "ap-shanghai",
 		AK:       "ak",
 		SK:       "sk",
 		Bucket:   "bkt",
@@ -44,27 +46,14 @@ func TestNewSource_ExplicitEndpoint(t *testing.T) {
 }
 
 func TestNewSource_MissingRegion(t *testing.T) {
+	// Endpoint is no longer used for BucketURL; Region is always required.
 	_, err := NewSource(SourceConfig{
 		AK: "ak", SK: "sk", Bucket: "bkt",
 	})
 	if err == nil {
-		t.Fatal("expected error when both Region and Endpoint are empty")
+		t.Fatal("expected error when Region is empty")
 	}
 	if !strings.Contains(err.Error(), "Region is required") {
-		t.Errorf("unexpected error message: %v", err)
-	}
-}
-
-func TestNewSource_InvalidEndpoint(t *testing.T) {
-	// url.Parse rejects strings with control characters in the scheme/authority.
-	_, err := NewSource(SourceConfig{
-		Endpoint: "ht\x00tps://bad",
-		AK:       "ak", SK: "sk", Bucket: "bkt",
-	})
-	if err == nil {
-		t.Fatal("expected error for malformed endpoint")
-	}
-	if !strings.Contains(err.Error(), "invalid base URL") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -88,8 +77,8 @@ func TestNewDestination_RegionInferred(t *testing.T) {
 func TestNewDestination_RetryConfigPassthrough(t *testing.T) {
 	custom := RetryConfig{MaxAttempts: 7, InitialWait: 0.1, MaxWait: 1, Multiplier: 2, Jitter: 0.1}
 	d, err := NewDestination(Config{
-		Endpoint: "https://bkt.cos.ap-beijing.myqcloud.com",
-		AK:       "ak", SK: "sk", Bucket: "bkt",
+		Region: "ap-beijing",
+		AK:     "ak", SK: "sk", Bucket: "bkt",
 		RetryCfg: custom,
 	})
 	if err != nil {
@@ -105,17 +94,10 @@ func TestNewDestination_MissingRegion(t *testing.T) {
 		AK: "ak", SK: "sk", Bucket: "bkt",
 	})
 	if err == nil {
-		t.Fatal("expected error when both Region and Endpoint are empty")
+		t.Fatal("expected error when Region is empty")
 	}
-}
-
-func TestNewDestination_InvalidEndpoint(t *testing.T) {
-	_, err := NewDestination(Config{
-		Endpoint: "ht\x00tps://bad",
-		AK:       "ak", SK: "sk", Bucket: "bkt",
-	})
-	if err == nil {
-		t.Fatal("expected error for malformed endpoint")
+	if !strings.Contains(err.Error(), "Region is required") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
@@ -235,8 +217,8 @@ func TestObjectToItem_DirectoryDefaults(t *testing.T) {
 
 	// Use a real but non-resolvable endpoint so the Head call fails fast.
 	s, err := NewSource(SourceConfig{
-		Endpoint: "https://test.cos.ap-test.myqcloud.com",
-		Bucket:   "test", AK: "ak", SK: "sk",
+		Region: "ap-test",
+		Bucket: "test", AK: "ak", SK: "sk",
 	})
 	if err != nil {
 		t.Fatalf("NewSource: %v", err)

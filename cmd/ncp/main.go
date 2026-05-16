@@ -19,6 +19,7 @@ import (
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
+	"github.com/zp001/ncp/internal/mkfiles"
 	"github.com/zp001/ncp/internal/ncpserver"
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/internal/task"
@@ -45,8 +46,17 @@ func main() {
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
 		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
-		Args:  cobra.MinimumNArgs(2),
-		RunE:  runCopy,
+		Args: func(cmd *cobra.Command, args []string) error {
+			taskID, _ := cmd.Flags().GetString("task")
+			if taskID != "" {
+				return nil
+			}
+			if len(args) < 2 {
+				return fmt.Errorf("copy requires <src> and <dst> arguments when not using --task")
+			}
+			return nil
+		},
+		RunE: runCopy,
 	}
 
 	// Config flags (all fields overridable via CLI)
@@ -64,7 +74,7 @@ func main() {
 	copyCmd.Flags().Int("IOSize", 0, "IO size in bytes (0 = use tiered default)")
 	copyCmd.Flags().Bool("enable-EnsureDirMtime", true, "Restore directory mtime after copy")
 	copyCmd.Flags().Bool("disable-EnsureDirMtime", false, "Do not restore directory mtime")
-	copyCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	copyCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	copyCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	copyCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	copyCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
@@ -103,7 +113,7 @@ func main() {
 	resumeCmd.Flags().Bool("disable-FileLog", false, "Disable FileLog output")
 	resumeCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	resumeCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
-	resumeCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	resumeCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
@@ -122,7 +132,7 @@ func main() {
 		Args:  cobra.NoArgs,
 		RunE:  runTaskList,
 	}
-	taskListCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskListCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskShowCmd := &cobra.Command{
 		Use:   "show <taskID>",
@@ -131,7 +141,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runTaskShow,
 	}
-	taskShowCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskShowCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskDeleteCmd := &cobra.Command{
 		Use:   "delete <taskID>",
@@ -140,7 +150,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runTaskDelete,
 	}
-	taskDeleteCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	taskDeleteCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 
 	taskCmd.AddCommand(taskListCmd, taskShowCmd, taskDeleteCmd)
 
@@ -170,14 +180,27 @@ func main() {
 	cksumCmd.Flags().Bool("disable-FileLog", false, "Disable FileLog output")
 	cksumCmd.Flags().String("FileLogOutput", "console", "FileLog output")
 	cksumCmd.Flags().Int("FileLogInterval", 5, "FileLog output interval (seconds)")
-	cksumCmd.Flags().String("ProgressStorePath", "./progress", "Progress storage directory")
+	cksumCmd.Flags().String("ProgressStorePath", "/tmp/ncp_progress_store", "Progress storage directory")
 	cksumCmd.Flags().String("task", "", "Resume an existing task by taskID")
 	cksumCmd.Flags().String("cksum-algorithm", "md5", "Checksum algorithm: md5 or xxh64")
 	cksumCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	cksumCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	cksumCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, verify all files")
 
-	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, newConfigCmd())
+	// mkfiles command
+	mkfilesCmd := &cobra.Command{
+		Use:   "mkfiles <dir>",
+		Short: "Generate random test files in a directory",
+		Long:  "Generate random test files with random names and content in the specified directory. Useful for testing ncp copy/cksum. Directories are nested up to --maxdirdepth levels, with 2^(depth-1) directories at each level. Files are randomly distributed across all directories.",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runMkfiles,
+	}
+	mkfilesCmd.Flags().Int("num", 100, "Number of files to generate")
+	mkfilesCmd.Flags().Int64("minsize", 0, "Minimum file size in bytes")
+	mkfilesCmd.Flags().Int64("maxsize", 1024, "Maximum file size in bytes")
+	mkfilesCmd.Flags().Int("maxdirdepth", 0, "Maximum directory nesting depth (0 = flat, no subdirectories)")
+
+	rootCmd.AddCommand(copyCmd, resumeCmd, taskCmd, serveCmd, cksumCmd, mkfilesCmd, newConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -356,7 +379,17 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	// Select source setup matching DB relPath format:
+	// - Original copy task: relPaths have basename prefix → use setupCopyDepsMulti
+	// - Original cksum task: relPaths have no prefix → use setupCopyDepsPlain
+	var src storage.Source
+	var dst storage.Destination
+	var extraOpts []copy.JobOption
+	if firstRunJobType(meta) == task.JobTypeCksum {
+		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode)
+	} else {
+		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	}
 	if err != nil {
 		return err
 	}
@@ -519,7 +552,14 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	var src storage.Source
+	var dst storage.Destination
+	var extraOpts []copy.JobOption
+	if firstRunJobType(meta) == task.JobTypeCksum {
+		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode)
+	} else {
+		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	}
 	if err != nil {
 		return 1, err
 	}
@@ -570,7 +610,57 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+	// Select source setup matching DB relPath format:
+	// - Original cksum task: relPaths have no prefix → use setupCksumDeps
+	// - Original copy task: relPaths have basename prefix → src needs BasenamePrefixedSource wrapping
+	var src storage.Source
+	var dst storage.Source
+	var extraOpts []cksum.CksumJobOption
+	if firstRunJobType(meta) == task.JobTypeCopy {
+		// Copy-task DB has basename-prefixed relPaths (e.g. "project/file1").
+		// Source must use BasenamePrefixedSource to route correctly.
+		srcPaths := strings.Split(meta.SrcBase, ",")
+		var copySrc storage.Source
+		var copyExtra []copy.JobOption
+		copySrc, _, copyExtra, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+		if err != nil {
+			return 1, err
+		}
+		src = copySrc
+		// Convert copy.JobOption src/dst factories to cksum.CksumJobOption
+		for _, opt := range copyExtra {
+			_ = opt
+		}
+
+		// dst is a Source (for reading), not a Destination
+		dst, err = di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+		if err != nil {
+			return 1, fmt.Errorf("create destination source: %w", err)
+		}
+		du, _ := di.ParsePath(meta.DstBase)
+		if du.Scheme == "ncp" {
+			dstFactory := func(id int) (storage.Source, error) {
+				return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+			}
+			extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
+		}
+		// Src factory for remote sources
+		for _, sp := range srcPaths {
+			su, _ := di.ParsePath(sp)
+			if su.Scheme == "ncp" {
+				srcFactory := func(id int) (storage.Source, error) {
+					return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				}
+				extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
+				break
+			}
+		}
+	} else {
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		if err != nil {
+			return 1, err
+		}
+	}
 	if err != nil {
 		return 1, err
 	}
@@ -609,6 +699,7 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 // runCksum is the Composition Root for the cksum command.
 func runCksum(cmd *cobra.Command, args []string) error {
 	resolveBoolFlag(cmd, "FileLogEnabled", "enable-FileLog", "disable-FileLog")
+	resolveBoolFlag(cmd, "SkipByMtime", "skip-by-mtime", "no-skip-by-mtime")
 
 	// Bind cksum flags to Viper
 	_ = v.BindPFlag("CopyParallelism", cmd.Flags().Lookup("CopyParallelism"))
@@ -772,9 +863,48 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 	srcMode := resolveRemoteSourceMode(store)
 
-	src, dst, extraOpts, err := setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
-	if err != nil {
-		return err
+	var src storage.Source
+	var dst storage.Source
+	var extraOpts []cksum.CksumJobOption
+	if firstRunJobType(meta) == task.JobTypeCopy {
+		srcPaths := strings.Split(meta.SrcBase, ",")
+		var copySrc storage.Source
+		var copyExtra []copy.JobOption
+		copySrc, _, copyExtra, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+		if err != nil {
+			return err
+		}
+		src = copySrc
+		for _, opt := range copyExtra {
+			_ = opt
+		}
+
+		dst, err = di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+		if err != nil {
+			return fmt.Errorf("create destination source: %w", err)
+		}
+		du, _ := di.ParsePath(meta.DstBase)
+		if du.Scheme == "ncp" {
+			dstFactory := func(id int) (storage.Source, error) {
+				return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+			}
+			extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
+		}
+		for _, sp := range srcPaths {
+			su, _ := di.ParsePath(sp)
+			if su.Scheme == "ncp" {
+				srcFactory := func(id int) (storage.Source, error) {
+					return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				}
+				extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
+				break
+			}
+		}
+	} else {
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, s := range []storage.Source{src, dst} {
@@ -1042,8 +1172,7 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 			return di.NewRemoteDestination(u.Host, u.Path)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
-		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
-	case "oss":
+	case "oss", "cos", "obs":
 		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
 			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
 		}
@@ -1051,7 +1180,69 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
 		}
 		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
-		extraOpts = append(extraOpts, copy.WithEnsureDirMtime(false))
+	default:
+		dstCfg := di.DestConfig{
+			DirectIO:    cfg.DirectIO,
+			SyncWrites:  cfg.SyncWrites,
+			IOSize:      cfg.IOSize,
+			IOSizeTiers: cfg.IOSizeTiers,
+		}
+		dst, err = di.NewDestination(dstPath, dstCfg, cfg.Profiles)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("create destination: %w", err)
+		}
+	}
+
+	// Set srcFactory for remote sources.
+	// Must wrap in BasenamePrefixedSource so that the replicator-side
+	// source strips the basename prefix from walker-produced relPaths,
+	// matching the walker-side j.src wrapping.
+	for _, sp := range srcPaths {
+		su, _ := di.ParsePath(sp)
+		if su.Scheme == "ncp" {
+			srcFactory := func(id int) (storage.Source, error) {
+				rawSrc, err := di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				if err != nil {
+					return nil, err
+				}
+				basename := di.SourceBasename(rawSrc, sp)
+				return di.NewBasenamePrefixedSource([]storage.Source{rawSrc}, []string{basename})
+			}
+			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
+			break
+		}
+	}
+
+	return src, dst, extraOpts, nil
+}
+
+// setupCopyDepsPlain creates source/destination deps for copy without
+// BasenamePrefixedSource wrapping. Used when resuming a copy from a cksum
+// task whose DB relPaths do not include the basename prefix.
+func setupCopyDepsPlain(cfg *config.Config, srcPath, dstPath string, srcMode uint8) (storage.Source, storage.Destination, []copy.JobOption, error) {
+	src, err := di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create source %s: %w", srcPath, err)
+	}
+
+	var extraOpts []copy.JobOption
+	var dst storage.Destination
+
+	u, _ := di.ParsePath(dstPath)
+	switch u.Scheme {
+	case "ncp":
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewRemoteDestination(u.Host, u.Path)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
+	case "oss", "cos", "obs":
+		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
+			return nil, nil, nil, fmt.Errorf("create destination: %w", vErr)
+		}
+		dstFactory := func(id int) (storage.Destination, error) {
+			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
+		}
+		extraOpts = append(extraOpts, copy.WithDstFactory(dstFactory))
 	default:
 		dstCfg := di.DestConfig{
 			DirectIO:    cfg.DirectIO,
@@ -1066,18 +1257,23 @@ func setupCopyDepsMulti(cfg *config.Config, srcPaths []string, dstPath string, s
 	}
 
 	// Set srcFactory for remote sources
-	for _, sp := range srcPaths {
-		su, _ := di.ParsePath(sp)
-		if su.Scheme == "ncp" {
-			srcFactory := func(id int) (storage.Source, error) {
-				return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
-			}
-			extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
-			break
+	su, _ := di.ParsePath(srcPath)
+	if su.Scheme == "ncp" {
+		srcFactory := func(id int) (storage.Source, error) {
+			return di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
 		}
+		extraOpts = append(extraOpts, copy.WithSrcFactory(srcFactory))
 	}
 
 	return src, dst, extraOpts, nil
+}
+
+// firstRunJobType returns the job type of the first run in the task's meta.
+func firstRunJobType(meta *task.Meta) task.JobType {
+	if len(meta.Runs) == 0 {
+		return task.JobTypeCopy
+	}
+	return meta.Runs[0].JobType
 }
 
 // loadResumeConfig loads config from a resume/task command's Viper flags.
@@ -1134,4 +1330,26 @@ func resolveRemoteSourceMode(store progress.ProgressStore) uint8 {
 		return protocol.ModeSourceNoWalker
 	}
 	return protocol.ModeSource
+}
+
+// runMkfiles handles `ncp mkfiles <dir>`.
+func runMkfiles(cmd *cobra.Command, args []string) error {
+	num, _ := cmd.Flags().GetInt("num")
+	minSize, _ := cmd.Flags().GetInt64("minsize")
+	maxSize, _ := cmd.Flags().GetInt64("maxsize")
+	maxDirDepth, _ := cmd.Flags().GetInt("maxdirdepth")
+	dir := args[0]
+
+	gen, err := mkfiles.NewGenerator(mkfiles.Config{
+		Dir:         dir,
+		NumFiles:    num,
+		MinSize:     minSize,
+		MaxSize:     maxSize,
+		MaxDirDepth: maxDirDepth,
+	})
+	if err != nil {
+		return err
+	}
+
+	return gen.Run()
 }

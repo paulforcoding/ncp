@@ -212,9 +212,31 @@ func (j *Job) finalize(ctx context.Context, walker *Walker, dbWriter *DBWriter, 
 	}
 
 	// EnsureDirMtime
-	if walkErr == nil && j.ensureDirMtime && j.dstBase != "" {
-		if err := EnsureDirMtime(ctx, j.store, j.src, j.dstBase); err != nil {
-			slog.Warn("ensure dir mtime failed", "error", err)
+	if walkErr == nil && j.ensureDirMtime {
+		if j.dstBase != "" && j.dstFactory == nil {
+			if err := EnsureDirMtime(ctx, j.store, j.src, j.dstBase); err != nil {
+				slog.Warn("ensure dir mtime failed", "error", err)
+			}
+		} else if j.dst != nil {
+			// Remote destination (non-factory): restore dir mtime via Destination interface
+			if err := EnsureDirMtimeViaDst(ctx, j.store, j.src, j.dst); err != nil {
+				slog.Warn("ensure dir mtime via dst failed", "error", err)
+			}
+		} else if j.dstFactory != nil {
+			// Remote destination (factory): create a temporary connection for dir mtime
+			dst, err := j.dstFactory(0)
+			if err != nil {
+				slog.Warn("ensure dir mtime: create dst failed", "error", err)
+			} else {
+				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					slog.Warn("ensure dir mtime: begin task failed", "error", err)
+				} else {
+					if err := EnsureDirMtimeViaDst(ctx, j.store, j.src, dst); err != nil {
+						slog.Warn("ensure dir mtime via dst failed", "error", err)
+					}
+					_ = dst.EndTask(ctx, storage.TaskSummary{})
+				}
+			}
 		}
 	}
 

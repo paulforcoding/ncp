@@ -26,6 +26,9 @@ func NewSource(base string) (*Source, error) {
 	if clean == "/" {
 		return nil, fmt.Errorf("local source: copying the entire filesystem root is not allowed")
 	}
+	if _, err := os.Stat(abs); err != nil {
+		return nil, fmt.Errorf("local source %s: %w", abs, err)
+	}
 	return &Source{base: abs}, nil
 }
 
@@ -83,7 +86,7 @@ func (s *Source) Walk(ctx context.Context, fn func(context.Context, storage.Disc
 			FileType: ft,
 			Size:     info.Size(),
 			Attr: storage.FileAttr{
-				Mode:  mode.Perm(),
+				Mode:  mode,
 				Uid:   uid,
 				Gid:   gid,
 				Mtime: info.ModTime(),
@@ -122,7 +125,7 @@ func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, 
 		f:    f,
 		size: info.Size(),
 		attr: storage.FileAttr{
-			Mode:  info.Mode().Perm(),
+			Mode:  info.Mode(),
 			Uid:   uid,
 			Gid:   gid,
 			Mtime: info.ModTime(),
@@ -183,7 +186,7 @@ func (s *Source) Stat(_ context.Context, relPath string) (storage.DiscoverItem, 
 		FileType: ft,
 		Size:     info.Size(),
 		Attr: storage.FileAttr{
-			Mode:  mode.Perm(),
+			Mode:  mode,
 			Uid:   uid,
 			Gid:   gid,
 			Mtime: info.ModTime(),

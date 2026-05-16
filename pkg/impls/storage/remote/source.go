@@ -132,7 +132,7 @@ func (s *Source) Open(ctx context.Context, relPath string) (storage.FileReader, 
 
 	msg := &protocol.OpenMsg{
 		Path:  relPath,
-		Flags: 0, // O_RDONLY
+		Flags: protocol.ProtoO_RDONLY,
 	}
 	ack, err := s.conn.SendMsgRecvAck(protocol.MsgOpen, msg.Encode())
 	if err != nil {
@@ -179,15 +179,23 @@ func (s *Source) URI() string {
 	return "ncp://" + s.addr + s.basePath
 }
 
+// protoModeToOS converts POSIX protocol mode bits to Go os.FileMode.
+// The protocol uses POSIX values (bit 9-11 for setuid/setgid/sticky),
+// which can be used directly with os.Chmod as os.FileMode(posixValue).
+func protoModeToOS(pm uint32) os.FileMode {
+	return os.FileMode(pm)
+}
+
 // listEntryToDiscoverItem converts a protocol ListEntry to a DiscoverItem.
-// uid/gid are set to 0 since they are not transmitted in the remote protocol.
 func listEntryToDiscoverItem(e *protocol.ListEntry) storage.DiscoverItem {
 	item := storage.DiscoverItem{
 		RelPath:  e.RelPath,
 		FileType: model.FileType(e.FileType),
 		Size:     e.FileSize,
 		Attr: storage.FileAttr{
-			Mode:          os.FileMode(e.Mode),
+			Mode:          protoModeToOS(e.Mode),
+			Uid:           int(e.UID),
+			Gid:           int(e.GID),
 			SymlinkTarget: e.LinkTarget,
 		},
 	}

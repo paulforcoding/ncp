@@ -118,7 +118,7 @@ func (d *Destination) Stat(_ context.Context, relPath string) (storage.DiscoverI
 		FileType: ft,
 		Size:     info.Size(),
 		Attr: storage.FileAttr{
-			Mode:  mode.Perm(),
+			Mode:  mode,
 			Uid:   uid,
 			Gid:   gid,
 			Mtime: info.ModTime(),

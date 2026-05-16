@@ -50,10 +50,15 @@ func (r *Reader) Read(ctx context.Context, p []byte) (int, error) {
 	}
 
 	n := copy(p, dataMsg.Data)
-	if n == 0 {
-		return 0, io.EOF
-	}
 	r.offset += int64(n)
+
+	if dataMsg.ResultCode == protocol.DataResultEOF {
+		return n, io.EOF
+	}
+
+	if n == 0 {
+		return 0, fmt.Errorf("remote pread: server returned empty data without EOF (resultCode=%d)", dataMsg.ResultCode)
+	}
 	return n, nil
 }
 
