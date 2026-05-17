@@ -21,6 +21,7 @@ type DestConfig struct {
 	SyncWrites  bool
 	IOSize      int
 	IOSizeTiers []model.IOSizeTier
+	OSSPartSize int64
 }
 
 // NewSource creates a Source from srcPath. Cloud schemes require a profile
@@ -136,6 +137,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	case "cos":
 		bucket, prefix := parseCOSURL(u)
@@ -149,6 +151,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	case "obs":
 		bucket, prefix := parseOBSURL(u)
@@ -162,6 +165,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported destination scheme: %s", u.Scheme)

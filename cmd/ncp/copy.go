@@ -133,6 +133,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		copy.WithCksumAlgo(resolveCksumAlgo(cfg)),
 		copy.WithSkipByMtime(cfg.SkipByMtime),
 		copy.WithChannelBuf(cfg.ChannelBuf),
+		copy.WithPartSize(cfg.OSSPartSize),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -236,6 +237,7 @@ func runCopyResume(cmd *cobra.Command, cfg *config.Config, taskID string) error 
 		copy.WithResume(true),
 		copy.WithSkipByMtime(cfg.SkipByMtime),
 		copy.WithChannelBuf(cfg.ChannelBuf),
+		copy.WithPartSize(cfg.OSSPartSize),
 	}
 	jobOpts = append(jobOpts, extraOpts...)
 
@@ -432,6 +434,7 @@ func createDestination(cfg *config.Config, dstPath, configJSON string) (storage.
 			SyncWrites:  cfg.SyncWrites,
 			IOSize:      cfg.IOSize,
 			IOSizeTiers: cfg.IOSizeTiers,
+			OSSPartSize: cfg.OSSPartSize,
 		}
 		return di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 	default:
@@ -449,11 +452,11 @@ func createDstFactory(cfg *config.Config, dstPath, configJSON string) (storage.D
 		}
 		return nil, []copy.JobOption{copy.WithDstFactory(dstFactory)}, nil
 	case "oss", "cos", "obs":
-		if _, vErr := di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles); vErr != nil {
+		if _, vErr := di.NewDestination(dstPath, di.DestConfig{OSSPartSize: cfg.OSSPartSize}, cfg.Profiles); vErr != nil {
 			return nil, nil, fmt.Errorf("create destination: %w", vErr)
 		}
 		dstFactory := func(id int) (storage.Destination, error) {
-			return di.NewDestination(dstPath, di.DestConfig{}, cfg.Profiles)
+			return di.NewDestination(dstPath, di.DestConfig{OSSPartSize: cfg.OSSPartSize}, cfg.Profiles)
 		}
 		return nil, []copy.JobOption{copy.WithDstFactory(dstFactory)}, nil
 	default:
@@ -462,6 +465,7 @@ func createDstFactory(cfg *config.Config, dstPath, configJSON string) (storage.D
 			SyncWrites:  cfg.SyncWrites,
 			IOSize:      cfg.IOSize,
 			IOSizeTiers: cfg.IOSizeTiers,
+			OSSPartSize: cfg.OSSPartSize,
 		}
 		dst, err := di.NewDestination(dstPath, dstCfg, cfg.Profiles)
 		if err != nil {

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	minPartSize = 1 << 20 // 1MB — COS multipart minimum
+	defaultPartSize = 100 << 20 // 100MB — multipart upload part size and threshold
 
 	metaPrefix = "ncp-"
 
@@ -33,30 +33,31 @@ const (
 	metaMtime         = metaPrefix + "mtime"
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
+	metaPartSize      = metaPrefix + "part-size"
 	metaXattrPrefix   = metaPrefix + "xattr-"
 )
 
 // Destination implements storage.Destination for Tencent Cloud COS.
 type Destination struct {
-	client             *cos.Client
-	bucket             string
-	prefix             string
-	retryCfg           RetryConfig
-	multipartThreshold int64
+	client   *cos.Client
+	bucket   string
+	prefix   string
+	retryCfg RetryConfig
+	partSize int64
 }
 
 var _ storage.Destination = (*Destination)(nil)
 
 // Config holds COS destination configuration.
 type Config struct {
-	Endpoint           string
-	Region             string
-	AK                 string
-	SK                 string
-	Bucket             string
-	Prefix             string
-	RetryCfg           RetryConfig
-	MultipartThreshold int64 // default 1GB; must be >= minPartSize
+	Endpoint string
+	Region   string
+	AK       string
+	SK       string
+	Bucket   string
+	Prefix   string
+	RetryCfg RetryConfig
+	PartSize int64 // multipart upload part size and threshold; default 100MB
 }
 
 // NewDestination creates a COS Destination.
@@ -83,9 +84,9 @@ func NewDestination(cfg Config) (*Destination, error) {
 		retryCfg = DefaultRetryConfig()
 	}
 
-	threshold := cfg.MultipartThreshold
-	if threshold == 0 {
-		threshold = 1 << 30 // 1GB default
+	partSize := cfg.PartSize
+	if partSize == 0 {
+		partSize = defaultPartSize
 	}
 
 	return &Destination{
@@ -93,7 +94,7 @@ func NewDestination(cfg Config) (*Destination, error) {
 		bucket:             cfg.Bucket,
 		prefix:             cfg.Prefix,
 		retryCfg:           retryCfg,
-		multipartThreshold: threshold,
+		partSize: partSize,
 	}, nil
 }
 
@@ -154,10 +155,10 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 	key := d.key(relPath)
 	meta := posixMetadata(mode, uid, gid)
 
-	if size < d.multipartThreshold {
+	if size < d.partSize {
 		return newSmallFileWriter(ctx, d.client, key, size, meta, d.retryCfg), nil
 	}
-	return newMultipartFileWriter(ctx, d.client, key, meta, d.retryCfg)
+	return newMultipartFileWriter(ctx, d.client, key, meta, d.retryCfg, d.partSize)
 }
 
 // SetMetadata updates an object's metadata using CopyObject with REPLACE directive.
@@ -187,6 +188,12 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 	}
 	for k, v := range attr.Xattr {
 		merged[metaXattrPrefix+k] = v
+	}
+	if attr.ChecksumHex != "" {
+		merged[metaMD5] = attr.ChecksumHex
+	}
+	if attr.PartSize > 0 {
+		merged[metaPartSize] = strconv.FormatInt(attr.PartSize, 10)
 	}
 
 	sourceURL := fmt.Sprintf("%s/%s", d.client.BaseURL.BucketURL.Host, key)
@@ -385,13 +392,14 @@ type multipartFileWriter struct {
 	parts    []cos.Object
 	partBuf  bytes.Buffer
 	partNum  int
+	partSize int64
 	md5Hash  hash.Hash
 	retryCfg RetryConfig
 	state    writerState
 	ctx      context.Context
 }
 
-func newMultipartFileWriter(ctx context.Context, client *cos.Client, key string, meta map[string]string, retryCfg RetryConfig) (*multipartFileWriter, error) {
+func newMultipartFileWriter(ctx context.Context, client *cos.Client, key string, meta map[string]string, retryCfg RetryConfig, partSize int64) (*multipartFileWriter, error) {
 	var result *cos.InitiateMultipartUploadResult
 	err := withRetry(ctx, retryCfg, func() error {
 		r, _, e := client.Object.InitiateMultipartUpload(ctx, key, &cos.InitiateMultipartUploadOptions{
@@ -414,6 +422,7 @@ func newMultipartFileWriter(ctx context.Context, client *cos.Client, key string,
 		key:      key,
 		meta:     meta,
 		uploadID: result.UploadID,
+		partSize: partSize,
 		md5Hash:  md5.New(),
 		retryCfg: retryCfg,
 		ctx:      ctx,
@@ -427,16 +436,16 @@ func (w *multipartFileWriter) Write(_ context.Context, p []byte) (int, error) {
 
 	remaining := p
 	for len(remaining) > 0 {
-		space := minPartSize - w.partBuf.Len()
+		space := w.partSize - int64(w.partBuf.Len())
 		n := len(remaining)
-		if n > space {
-			n = space
+		if int64(n) > space {
+			n = int(space)
 		}
 		w.partBuf.Write(remaining[:n])
 		w.md5Hash.Write(remaining[:n])
 		remaining = remaining[n:]
 
-		if w.partBuf.Len() >= minPartSize {
+		if int64(w.partBuf.Len()) >= w.partSize {
 			if err := w.flushPart(); err != nil {
 				return len(p) - len(remaining), err
 			}

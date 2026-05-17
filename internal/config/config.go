@@ -26,7 +26,7 @@ type Config struct {
 	CksumAlgorithm     string             `json:"CksumAlgorithm" mapstructure:"CksumAlgorithm"`
 	SkipByMtime        bool               `json:"SkipByMtime" mapstructure:"SkipByMtime"`
 	ChannelBuf         int                `json:"ChannelBuf" mapstructure:"ChannelBuf"`
-	MultipartThreshold int64              `json:"MultipartThreshold" mapstructure:"MultipartThreshold"`
+	OSSPartSize        int64              `json:"OSSPartSize" mapstructure:"OSSPartSize"`
 
 	// Profiles holds named credential sets keyed by profile name.
 	// Each profile is referenced from a URL via userinfo: oss://<profile>@bucket/path.
@@ -54,7 +54,7 @@ func DefaultConfig() Config {
 		ServerListenAddr:   ":9900",
 		CksumAlgorithm:     string(model.DefaultCksumAlgorithm),
 		SkipByMtime:        true,
-		MultipartThreshold: 1 << 30, // 1GB
+		OSSPartSize: 100 << 20, // 100MB
 	}
 }
 
@@ -66,9 +66,13 @@ func (c *Config) Validate() error {
 	if c.CopyParallelism < 1 {
 		return fmt.Errorf("CopyParallelism must be >= 1, got %d", c.CopyParallelism)
 	}
-	const minMultipartThreshold = 5 << 20 // 5MB
-	if c.MultipartThreshold > 0 && c.MultipartThreshold < minMultipartThreshold {
-		return fmt.Errorf("MultipartThreshold must be >= 5MB, got %d", c.MultipartThreshold)
+	const minOSSPartSize = 5 << 20  // 5MB — cloud multipart minimum
+	const maxOSSPartSize = 5 << 30  // 5GB — cloud multipart maximum
+	if c.OSSPartSize > 0 && c.OSSPartSize < minOSSPartSize {
+		return fmt.Errorf("OSSPartSize must be >= 5MB, got %d", c.OSSPartSize)
+	}
+	if c.OSSPartSize > maxOSSPartSize {
+		return fmt.Errorf("OSSPartSize must be <= 5GB, got %d", c.OSSPartSize)
 	}
 	for name, p := range c.Profiles {
 		if p.Provider == "" {

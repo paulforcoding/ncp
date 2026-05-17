@@ -25,6 +25,7 @@ const (
 	metaMtime         = metaPrefix + "mtime"
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
+	metaPartSize      = metaPrefix + "part-size"
 	metaXattrPrefix   = metaPrefix + "xattr-"
 )
 

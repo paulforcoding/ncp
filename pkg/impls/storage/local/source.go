@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
@@ -213,7 +212,7 @@ func (s *Source) ComputeHash(ctx context.Context, relPath string, algo model.Cks
 	}
 	defer f.Close()
 
-	hasher := copy.NewHasher(algo)
+	hasher := model.NewHasher(algo)
 	buf := make([]byte, chunkSize)
 	chunkHashes := []string{}
 
@@ -226,17 +225,17 @@ func (s *Source) ComputeHash(ctx context.Context, relPath string, algo model.Cks
 
 		n, readErr := f.Read(buf)
 		if n > 0 {
-			chunkHasher := copy.NewHasher(algo)
+			chunkHasher := model.NewHasher(algo)
 			chunkHasher.Write(buf[:n])
 			hasher.Write(buf[:n])
-			chunkHashes = append(chunkHashes, copy.SumToHex(chunkHasher))
+			chunkHashes = append(chunkHashes, model.SumToHex(chunkHasher))
 		}
 		if readErr != nil {
 			break
 		}
 	}
 
-	wholeFileHash := copy.SumToHex(hasher)
+	wholeFileHash := model.SumToHex(hasher)
 	return storage.HashResult{
 		WholeFileHash: wholeFileHash,
 		ChunkHashes:   chunkHashes,

@@ -21,10 +21,11 @@ type Replicator struct {
 	cksumAlgo   model.CksumAlgorithm
 	metrics     *ThroughputMeter
 	skipByMtime bool
+	partSize    int64
 }
 
 // NewReplicator creates a Replicator with the given ID.
-func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter, skipByMtime bool) *Replicator {
+func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter, skipByMtime bool, partSize int64) *Replicator {
 	return &Replicator{
 		id:          id,
 		src:         src,
@@ -34,6 +35,7 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 		cksumAlgo:   cksumAlgo,
 		metrics:     metrics,
 		skipByMtime: skipByMtime,
+		partSize:    partSize,
 	}
 }
 
@@ -180,7 +182,7 @@ func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) mo
 	}
 	buf := make([]byte, bufSize)
 
-	h := NewHasher(r.cksumAlgo)
+	h := model.NewHasher(r.cksumAlgo)
 	for {
 		n, readErr := reader.Read(ctx, buf)
 		if n > 0 {
@@ -227,8 +229,11 @@ func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) mo
 
 	checksumHex := fmt.Sprintf("%x", checksumBytes)
 
-	// Preserve file metadata (mode, uid/gid, atime, mtime, xattr)
-	if err := r.dst.SetMetadata(ctx, item.RelPath, item.Attr); err != nil {
+	// Preserve file metadata (mode, uid/gid, atime, mtime, xattr) and checksum
+	attr := item.Attr
+	attr.ChecksumHex = checksumHex
+	attr.PartSize = r.partSize
+	if err := r.dst.SetMetadata(ctx, item.RelPath, attr); err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,

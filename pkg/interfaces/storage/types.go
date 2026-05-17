@@ -17,6 +17,8 @@ type FileAttr struct {
 	Atime         time.Time
 	Xattr         map[string]string
 	SymlinkTarget string // valid only when FileType == FileSymlink
+	ChecksumHex   string // hex-encoded checksum, written to cloud ncp-md5 metadata
+	PartSize      int64  // multipart upload part-size, written to cloud ncp-part-size metadata; 0 = not applicable
 }
 
 // DiscoverItem is the work unit produced by Walker and consumed by Replicator.

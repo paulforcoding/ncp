@@ -1,6 +1,12 @@
 package model
 
-import "fmt"
+import (
+	"crypto/md5"
+	"fmt"
+	"hash"
+
+	"github.com/cespare/xxhash/v2"
+)
 
 // CksumAlgorithm defines the checksum algorithm for data verification.
 type CksumAlgorithm string
@@ -23,4 +29,19 @@ func ParseCksumAlgorithm(s string) (CksumAlgorithm, error) {
 	default:
 		return "", fmt.Errorf("unknown checksum algorithm: %q (supported: md5, xxh64)", s)
 	}
+}
+
+// NewHasher creates a hash.Hash for the given checksum algorithm.
+func NewHasher(algo CksumAlgorithm) hash.Hash {
+	switch algo {
+	case CksumXXH64:
+		return xxhash.New()
+	default:
+		return md5.New()
+	}
+}
+
+// SumToHex returns the hex-encoded checksum string.
+func SumToHex(h hash.Hash) string {
+	return fmt.Sprintf("%x", h.Sum(nil))
 }

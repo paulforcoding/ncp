@@ -61,6 +61,7 @@ func main() {
 	copyCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	copyCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 	copyCmd.Flags().Int("ChannelBuf", 100000, "Channel buffer size for discover/result queues")
+		copyCmd.Flags().Int64("oss-part-size", 0, "Multipart upload part size in bytes (0 = use default 100MB)")
 
 	// Bind all flags to Viper
 	_ = v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -77,6 +78,7 @@ func main() {
 	_ = v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
 	_ = v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
 	_ = v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
+		_ = v.BindPFlag("OSSPartSize", copyCmd.Flags().Lookup("oss-part-size"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -97,6 +99,7 @@ func main() {
 	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
+	resumeCmd.Flags().Int64("oss-part-size", 0, "Multipart upload part size in bytes (0 = use default 100MB)")
 
 	// task command group
 	taskCmd := &cobra.Command{

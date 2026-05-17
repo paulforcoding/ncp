@@ -33,6 +33,7 @@ type Job struct {
 	resume         bool
 	skipByMtime    bool
 	metrics        *ThroughputMeter
+	partSize       int64
 
 	fatalErr atomic.Value // error — fatal factory error that stops the job
 	cancel   context.CancelFunc
@@ -73,6 +74,7 @@ func WithEnsureDirMtime(v bool) JobOption               { return func(j *Job) { 
 func WithResume(v bool) JobOption                       { return func(j *Job) { j.resume = v } }
 func WithSkipByMtime(v bool) JobOption                  { return func(j *Job) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
+func WithPartSize(size int64) JobOption                { return func(j *Job) { j.partSize = size } }
 func WithSrcFactory(f func(id int) (storage.Source, error)) JobOption {
 	return func(j *Job) { j.srcFactory = f }
 }
@@ -183,7 +185,7 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 				slog.Info("replicator: using shared destination", "id", id, "dstNil", dst == nil)
 			}
 
-			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
+			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime, j.partSize)
 			r.Run(ctx, discoverCh, resultCh)
 		}(i)
 	}
