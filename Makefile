@@ -1,4 +1,4 @@
-VERSION ?= 0.5.5
+VERSION ?= 0.5.6
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 GOBIN := $(shell go env GOPATH)/bin
 
