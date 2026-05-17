@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
 )
@@ -202,4 +203,43 @@ func (s *Source) Stat(_ context.Context, relPath string) (storage.DiscoverItem, 
 	}
 
 	return item, nil
+}
+
+func (s *Source) ComputeHash(ctx context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (storage.HashResult, error) {
+	fullPath := filepath.Join(s.base, relPath)
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return storage.HashResult{}, fmt.Errorf("local computeHash open %s: %w", relPath, err)
+	}
+	defer f.Close()
+
+	hasher := copy.NewHasher(algo)
+	buf := make([]byte, chunkSize)
+	chunkHashes := []string{}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return storage.HashResult{}, ctx.Err()
+		default:
+		}
+
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			chunkHasher := copy.NewHasher(algo)
+			chunkHasher.Write(buf[:n])
+			hasher.Write(buf[:n])
+			chunkHashes = append(chunkHashes, copy.SumToHex(chunkHasher))
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	wholeFileHash := copy.SumToHex(hasher)
+	return storage.HashResult{
+		WholeFileHash: wholeFileHash,
+		ChunkHashes:   chunkHashes,
+		Algo:          string(algo),
+	}, nil
 }

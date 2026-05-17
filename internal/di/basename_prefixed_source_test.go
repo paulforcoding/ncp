@@ -39,6 +39,9 @@ func (m *mockSource) Connect(ctx context.Context) error                         
 func (m *mockSource) Close(ctx context.Context) error                                { return nil }
 func (m *mockSource) BeginTask(ctx context.Context, taskID string) error             { return nil }
 func (m *mockSource) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+func (m *mockSource) ComputeHash(ctx context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (storage.HashResult, error) {
+	return storage.HashResult{}, fmt.Errorf("mock computeHash: %s", relPath)
+}
 
 func TestBasenamePrefixedSource_SingleDir(t *testing.T) {
 	inner := &mockSource{

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/model"
@@ -18,14 +19,15 @@ import (
 
 // ConnHandler handles all protocol messages on a single server connection.
 type ConnHandler struct {
-	server     *Server
-	basePath   string
-	mode       uint8
-	taskID     string
-	walker     *taskWalker // Source mode only; references server.walker
-	fdWriteMap map[uint32]*openWriteFile
-	fdReadMap  map[uint32]*os.File
-	nextFD     uint32
+	server         *Server
+	basePath       string
+	mode           uint8
+	taskID         string
+	walker         *taskWalker // Source mode only; references server.walker
+	fdWriteMap     map[uint32]*openWriteFile
+	fdReadMap      map[uint32]*os.File
+	fdChecksumMap  map[uint32]*openChecksumFile
+	nextFD         uint32
 }
 
 // protoFlagsToOS converts protocol-level ProtoO_* flags to OS-specific os.O_* flags.
@@ -85,12 +87,20 @@ type openWriteFile struct {
 	md5  hash.Hash
 }
 
+type openChecksumFile struct {
+	f        *os.File
+	hasher   hash.Hash // cumulative hash, never Reset
+	offset   int64
+	fileSize int64
+}
+
 // NewConnHandler creates a ConnHandler for the given server.
 func NewConnHandler(server *Server) *ConnHandler {
 	return &ConnHandler{
-		server:     server,
-		fdWriteMap: make(map[uint32]*openWriteFile),
-		fdReadMap:  make(map[uint32]*os.File),
+		server:        server,
+		fdWriteMap:    make(map[uint32]*openWriteFile),
+		fdReadMap:     make(map[uint32]*os.File),
+		fdChecksumMap: make(map[uint32]*openChecksumFile),
 	}
 }
 
@@ -245,6 +255,12 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgStat:
 			slog.Debug("handler: MsgStat", "msgCount", msgCount)
 			respType, respPayload = h.handleStat(frame)
+		case protocol.MsgChecksumOpen:
+			respType, respPayload = h.handleChecksumOpen(frame)
+		case protocol.MsgChecksumNext:
+			respType, respPayload = h.handleChecksumNext(frame)
+		case protocol.MsgChecksumClose:
+			respType, respPayload = h.handleChecksumClose(frame)
 		default:
 			slog.Info("handler: unknown message type", "type", fmt.Sprintf("0x%02X", frame.Type), "msgCount", msgCount)
 			respType = protocol.MsgError
@@ -591,6 +607,137 @@ func (h *ConnHandler) cleanup() {
 		f.Close()
 		delete(h.fdReadMap, fd)
 	}
+	for fd, cf := range h.fdChecksumMap {
+		cf.f.Close()
+		delete(h.fdChecksumMap, fd)
+	}
+}
+
+func hasherForProto(algo uint8) hash.Hash {
+	switch algo {
+	case protocol.ProtoCksumXXH64:
+		return xxhash.New()
+	default:
+		return md5.New()
+	}
+}
+
+func (h *ConnHandler) handleChecksumOpen(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumOpenMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	fd := h.nextFD
+	h.nextFD++
+	hasher := hasherForProto(msg.Algo)
+	cf := &openChecksumFile{f: f, hasher: hasher, offset: 0, fileSize: info.Size()}
+	h.fdChecksumMap[fd] = cf
+
+	// Read first chunk
+	resultMsg, err := h.readChecksumChunk(fd, cf)
+	if err != nil {
+		cf.f.Close()
+		delete(h.fdChecksumMap, fd)
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
+	}
+
+	return protocol.MsgChecksumResult, resultMsg.Encode()
+}
+
+func (h *ConnHandler) handleChecksumNext(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumNextMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	cf, ok := h.fdChecksumMap[msg.FD]
+	if !ok {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, "bad fd")
+	}
+
+	resultMsg, err := h.readChecksumChunk(msg.FD, cf)
+	if err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
+	}
+
+	return protocol.MsgChecksumResult, resultMsg.Encode()
+}
+
+func newChunkHasherLike(cf *openChecksumFile) hash.Hash {
+	switch cf.hasher.(type) {
+	case *xxhash.Digest:
+		return xxhash.New()
+	default:
+		return md5.New()
+	}
+}
+
+func (h *ConnHandler) readChecksumChunk(fd uint32, cf *openChecksumFile) (*protocol.ChecksumResultMsg, error) {
+	buf := make([]byte, protocol.CksumChunkSize)
+	n, readErr := cf.f.ReadAt(buf, cf.offset)
+
+	// Hard error with no data read
+	if readErr != nil && readErr != io.EOF && n == 0 {
+		return nil, readErr
+	}
+
+	var chunkHashBytes []byte
+	if n > 0 {
+		chunkHasher := newChunkHasherLike(cf)
+		chunkHasher.Write(buf[:n])
+		cf.hasher.Write(buf[:n])
+		chunkHashBytes = chunkHasher.Sum(nil)
+		cf.offset += int64(n)
+	} else {
+		// Empty file: hash of zero bytes
+		chunkHasher := newChunkHasherLike(cf)
+		chunkHashBytes = chunkHasher.Sum(nil)
+	}
+
+	eof := uint8(0)
+	if readErr == io.EOF || cf.offset >= cf.fileSize {
+		eof = 1
+	}
+
+	cumHash := cf.hasher.Sum(nil) // snapshot cumulative hash (does not Reset)
+
+	return &protocol.ChecksumResultMsg{
+		FD:             fd,
+		ChunkHash:      chunkHashBytes,
+		CumulativeHash: cumHash,
+		BytesInChunk:   uint32(n),
+		EOF:            eof,
+	}, nil
+}
+
+func (h *ConnHandler) handleChecksumClose(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumCloseMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	cf, ok := h.fdChecksumMap[msg.FD]
+	if !ok {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, "bad fd")
+	}
+
+	cf.f.Close()
+	delete(h.fdChecksumMap, msg.FD)
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
 }
 
 func equalChecksum(a, b []byte) bool {

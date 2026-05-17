@@ -40,3 +40,16 @@ var (
 	ErrChecksum        = errors.New("storage: checksum mismatch")
 	ErrUnsupported     = errors.New("storage: operation not supported")
 )
+
+// CksumChunkSize is the fixed chunk size for checksum computation (1 MiB).
+const CksumChunkSize = 1 << 20
+
+// HashResult holds the output of a checksum computation.
+// WholeFileHash is the cumulative hash at EOF = MD5(file_content), hex-encoded.
+// ChunkHashes are per-CksumChunkSize chunk hashes, hex-encoded.
+type HashResult struct {
+	WholeFileHash string
+	ChunkHashes   []string
+	Algo          string
+	Err           error
+}

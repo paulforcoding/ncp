@@ -2,9 +2,10 @@ package cksum
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 
+	"golang.org/x/sync/errgroup"
 	"github.com/zp001/ncp/internal/copy"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
 	"github.com/zp001/ncp/pkg/model"
@@ -76,40 +77,94 @@ func (w *CksumWorker) cksumOne(ctx context.Context, item storage.DiscoverItem) m
 }
 
 func (w *CksumWorker) cksumFile(ctx context.Context, item storage.DiscoverItem) model.FileResult {
-	srcHash, err := w.computeHash(ctx, w.src, item.RelPath)
-	if err != nil {
+	g, gCtx := errgroup.WithContext(ctx)
+
+	var srcRes, dstRes storage.HashResult
+	g.Go(func() error {
+		res, err := w.src.ComputeHash(gCtx, item.RelPath, w.cksumAlgo, storage.CksumChunkSize)
+		srcRes = res
+		return err
+	})
+	g.Go(func() error {
+		res, err := w.dst.ComputeHash(gCtx, item.RelPath, w.cksumAlgo, storage.CksumChunkSize)
+		dstRes = res
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		status := model.CksumError
+		errMsg := fmt.Sprintf("hash error: %v", err)
+		// If either side returned ErrChecksum (OSS multipart without ncp-md5), treat as mismatch
+		if errors.Is(srcRes.Err, storage.ErrChecksum) || errors.Is(dstRes.Err, storage.ErrChecksum) {
+			status = model.CksumMismatch
+			errMsg = fmt.Sprintf("checksum unavailable: src=%v dst=%v", srcRes.Err, dstRes.Err)
+		}
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
 			FileSize:    item.Size,
-			CksumStatus: model.CksumError,
+			CksumStatus: status,
 			Algorithm:   string(w.cksumAlgo),
-			SrcHash:     srcHash,
-			Err:         fmt.Errorf("src read: %w", err),
+			SrcHash:     srcRes.WholeFileHash,
+			DstHash:     dstRes.WholeFileHash,
+			Err:         fmt.Errorf("%s", errMsg),
 		}
 	}
 
-	dstHash, err := w.computeHash(ctx, w.dst, item.RelPath)
-	if err != nil {
+	return compareHashResults(item, srcRes, dstRes, w.cksumAlgo)
+}
+
+func compareHashResults(item storage.DiscoverItem, srcRes, dstRes storage.HashResult, algo model.CksumAlgorithm) model.FileResult {
+	srcHash := srcRes.WholeFileHash
+	dstHash := dstRes.WholeFileHash
+
+	// Per-chunk comparison if both sides have chunk hashes
+	if len(srcRes.ChunkHashes) > 0 && len(dstRes.ChunkHashes) > 0 {
+		if len(srcRes.ChunkHashes) != len(dstRes.ChunkHashes) {
+			return model.FileResult{
+				RelPath:     item.RelPath,
+				FileType:    item.FileType,
+				FileSize:    item.Size,
+				CksumStatus: model.CksumMismatch,
+				Algorithm:   string(algo),
+				SrcHash:     srcHash,
+				DstHash:     dstHash,
+				Err:         fmt.Errorf("%s mismatch: chunk count src=%d dst=%d", algo, len(srcRes.ChunkHashes), len(dstRes.ChunkHashes)),
+			}
+		}
+		for i, sh := range srcRes.ChunkHashes {
+			if sh != dstRes.ChunkHashes[i] {
+				return model.FileResult{
+					RelPath:     item.RelPath,
+					FileType:    item.FileType,
+					FileSize:    item.Size,
+					CksumStatus: model.CksumMismatch,
+					Algorithm:   string(algo),
+					SrcHash:     srcHash,
+					DstHash:     dstHash,
+					Err:         fmt.Errorf("%s mismatch at chunk %d: src=%s dst=%s", algo, i, sh, dstRes.ChunkHashes[i]),
+				}
+			}
+		}
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
 			FileSize:    item.Size,
-			CksumStatus: model.CksumMismatch,
-			Algorithm:   string(w.cksumAlgo),
+			CksumStatus: model.CksumPass,
+			Algorithm:   string(algo),
 			SrcHash:     srcHash,
 			DstHash:     dstHash,
-			Err:         fmt.Errorf("dst read: %w", err),
 		}
 	}
 
+	// Fall back to whole-file hash comparison (e.g. OSS with etag-md5)
 	if srcHash == dstHash {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,
 			FileSize:    item.Size,
 			CksumStatus: model.CksumPass,
-			Algorithm:   string(w.cksumAlgo),
+			Algorithm:   string(algo),
 			SrcHash:     srcHash,
 			DstHash:     dstHash,
 		}
@@ -120,41 +175,11 @@ func (w *CksumWorker) cksumFile(ctx context.Context, item storage.DiscoverItem) 
 		FileType:    item.FileType,
 		FileSize:    item.Size,
 		CksumStatus: model.CksumMismatch,
-		Algorithm:   string(w.cksumAlgo),
+		Algorithm:   string(algo),
 		SrcHash:     srcHash,
 		DstHash:     dstHash,
-		Err:         fmt.Errorf("%s mismatch: src=%s dst=%s", w.cksumAlgo, srcHash, dstHash),
+		Err:         fmt.Errorf("%s mismatch: src=%s dst=%s", algo, srcHash, dstHash),
 	}
-}
-
-func (w *CksumWorker) computeHash(ctx context.Context, src storage.Source, relPath string) (string, error) {
-	reader, err := src.Open(ctx, relPath)
-	if err != nil {
-		return "", err
-	}
-	defer reader.Close(ctx)
-
-	bufSize := w.ioSize
-	if bufSize <= 0 {
-		bufSize = 128 * 1024
-	}
-	buf := make([]byte, bufSize)
-
-	h := copy.NewHasher(w.cksumAlgo)
-	for {
-		n, readErr := reader.Read(ctx, buf)
-		if n > 0 {
-			h.Write(buf[:n])
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return "", readErr
-		}
-	}
-
-	return copy.SumToHex(h), nil
 }
 
 func (w *CksumWorker) cksumDir(ctx context.Context, item storage.DiscoverItem) model.FileResult {

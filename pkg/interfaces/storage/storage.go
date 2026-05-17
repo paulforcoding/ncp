@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"time"
+
+	"github.com/zp001/ncp/pkg/model"
 )
 
 // Walker traverses a source and invokes fn for each discovered item.
@@ -47,6 +49,7 @@ type Source interface {
 	TaskBoundary
 	Open(ctx context.Context, relPath string) (FileReader, error)
 	URI() string
+	ComputeHash(ctx context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (HashResult, error)
 }
 
 // FileWriter writes data to a destination file as a stream.

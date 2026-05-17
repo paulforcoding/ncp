@@ -22,8 +22,20 @@ const (
 	MsgStat      uint8 = 0x0D
 	MsgAbortFile uint8 = 0x0E
 	MsgChmod     uint8 = 0x0F
-	MsgChown     uint8 = 0x10
+	MsgChown          uint8 = 0x10
+	MsgChecksumOpen   uint8 = 0x11
+	MsgChecksumNext   uint8 = 0x12
+	MsgChecksumClose  uint8 = 0x13
 )
+
+// Protocol-level checksum algorithm constants.
+const (
+	ProtoCksumMD5   uint8 = 0
+	ProtoCksumXXH64 uint8 = 1
+)
+
+// CksumChunkSize is the fixed chunk size for checksum computation (1 MiB).
+const CksumChunkSize = 1 << 20
 
 // Protocol-level OpenMsg flags (platform-independent).
 // These are NOT os.O_* values — they use fixed wire values
@@ -53,9 +65,10 @@ const (
 
 // Server → Client message types (0x8X)
 const (
-	MsgAck   uint8 = 0x81
-	MsgError uint8 = 0x82
-	MsgData  uint8 = 0x83
+	MsgAck            uint8 = 0x81
+	MsgError          uint8 = 0x82
+	MsgData           uint8 = 0x83
+	MsgChecksumResult uint8 = 0x84
 )
 
 // --- Client → Server messages ---
@@ -810,4 +823,119 @@ func DecodeAckU32(data []byte) (uint16, uint32) {
 func EncodeError(code uint16, message string) []byte {
 	m := &ErrorMsg{Code: code, Message: message}
 	return m.Encode()
+}
+
+// --- Checksum session messages (Client → Server) ---
+
+// ChecksumOpenMsg opens a file for checksum computation.
+// The server opens the file, reads the first CksumChunkSize bytes,
+// computes both chunk hash and cumulative hash, and returns a ChecksumResultMsg.
+type ChecksumOpenMsg struct {
+	Path string
+	Algo uint8 // ProtoCksumMD5 or ProtoCksumXXH64
+}
+
+func (m *ChecksumOpenMsg) Encode() []byte {
+	pathBytes := []byte(m.Path)
+	n := 2 + len(pathBytes) + 1
+	b := make([]byte, n)
+	binary.BigEndian.PutUint16(b[0:], uint16(len(pathBytes)))
+	copy(b[2:], pathBytes)
+	b[2+len(pathBytes)] = m.Algo
+	return b
+}
+
+func (m *ChecksumOpenMsg) Decode(data []byte) error {
+	pathLen := int(binary.BigEndian.Uint16(data[0:]))
+	m.Path = string(data[2 : 2+pathLen])
+	m.Algo = data[2+pathLen]
+	return nil
+}
+
+// ChecksumNextMsg requests the next chunk's checksum.
+// Chunk size is fixed at CksumChunkSize (1 MiB).
+type ChecksumNextMsg struct {
+	FD uint32
+}
+
+func (m *ChecksumNextMsg) Encode() []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, m.FD)
+	return b
+}
+
+func (m *ChecksumNextMsg) Decode(data []byte) error {
+	m.FD = binary.BigEndian.Uint32(data)
+	return nil
+}
+
+// ChecksumCloseMsg closes a checksum session FD.
+type ChecksumCloseMsg struct {
+	FD uint32
+}
+
+func (m *ChecksumCloseMsg) Encode() []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, m.FD)
+	return b
+}
+
+func (m *ChecksumCloseMsg) Decode(data []byte) error {
+	m.FD = binary.BigEndian.Uint32(data)
+	return nil
+}
+
+// --- Checksum result message (Server → Client) ---
+
+// ChecksumResultMsg is the payload for MsgChecksumResult.
+// Returned by both MsgChecksumOpen and MsgChecksumNext handlers.
+// ChunkHash is the hash of this chunk's content.
+// CumulativeHash is the running hash from offset 0 to end of this chunk.
+// At EOF, CumulativeHash equals MD5(file_content) (the whole-file hash).
+type ChecksumResultMsg struct {
+	FD            uint32
+	ChunkHash     []byte
+	CumulativeHash []byte
+	BytesInChunk  uint32
+	EOF           uint8 // 1 = last chunk, 0 = more chunks follow
+}
+
+func (m *ChecksumResultMsg) Encode() []byte {
+	n := 4 + 4 + len(m.ChunkHash) + 4 + len(m.CumulativeHash) + 4 + 1
+	b := make([]byte, n)
+	off := 0
+	binary.BigEndian.PutUint32(b[off:], m.FD)
+	off += 4
+	binary.BigEndian.PutUint32(b[off:], uint32(len(m.ChunkHash)))
+	off += 4
+	copy(b[off:], m.ChunkHash)
+	off += len(m.ChunkHash)
+	binary.BigEndian.PutUint32(b[off:], uint32(len(m.CumulativeHash)))
+	off += 4
+	copy(b[off:], m.CumulativeHash)
+	off += len(m.CumulativeHash)
+	binary.BigEndian.PutUint32(b[off:], m.BytesInChunk)
+	off += 4
+	b[off] = m.EOF
+	return b
+}
+
+func (m *ChecksumResultMsg) Decode(data []byte) error {
+	off := 0
+	m.FD = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	chunkHashLen := int(binary.BigEndian.Uint32(data[off:]))
+	off += 4
+	m.ChunkHash = make([]byte, chunkHashLen)
+	copy(m.ChunkHash, data[off:off+chunkHashLen])
+	off += chunkHashLen
+	cumHashLen := int(binary.BigEndian.Uint32(data[off:]))
+	off += 4
+	m.CumulativeHash = make([]byte, cumHashLen)
+	copy(m.CumulativeHash, data[off:off+cumHashLen])
+	off += cumHashLen
+	m.BytesInChunk = binary.BigEndian.Uint32(data[off:])
+	off += 4
+	m.EOF = data[off]
+	return nil
 }
