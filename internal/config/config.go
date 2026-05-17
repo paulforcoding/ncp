@@ -43,7 +43,7 @@ func DefaultConfig() Config {
 		ProgramLogLevel:    "warning",
 		ProgramLogOutput:   "console",
 		FileLogEnabled:     true,
-		FileLogOutput:      "/tmp/ncp_file_log.json",
+		FileLogOutput:      "console",
 		FileLogInterval:    5,
 		DirectIO:           false,
 		SyncWrites:         true,
