@@ -144,6 +144,7 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 
 func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
+	slog.Info("starting replicators", "count", j.parallelism, "dstFactory", j.dstFactory != nil, "srcFactory", j.srcFactory != nil)
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -172,10 +173,14 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 					j.drainOnFatal(fmt.Errorf("replicator %d: create destination: %w", id, err))
 					return
 				}
+				slog.Info("replicator: created destination via factory", "id", id)
 				if err := dst.BeginTask(ctx, j.taskID); err != nil {
 					j.drainOnFatal(fmt.Errorf("replicator %d: begin destination task: %w", id, err))
 					return
 				}
+				slog.Info("replicator: destination BeginTask succeeded", "id", id)
+			} else {
+				slog.Info("replicator: using shared destination", "id", id, "dstNil", dst == nil)
 			}
 
 			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)

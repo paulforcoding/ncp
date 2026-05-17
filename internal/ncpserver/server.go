@@ -41,9 +41,8 @@ func NewServer(listener net.Listener) *Server {
 }
 
 // ApplyConfig stores the ServerConfig received from the first client connection.
+// Caller must hold s.mu.
 func (s *Server) ApplyConfig(cfg *model.ServerConfig) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cfg = cfg
 }
 
@@ -76,7 +75,7 @@ func (s *Server) Serve() error {
 			}
 		}
 
-		atomic.AddInt64(&s.activeConns, 1)
+		slog.Info("accepted connection", "remote", netConn.RemoteAddr(), "activeConns", atomic.AddInt64(&s.activeConns, 1))
 		go func() {
 			defer atomic.AddInt64(&s.activeConns, -1)
 			conn := protocol.NewConn(netConn)
@@ -84,7 +83,9 @@ func (s *Server) Serve() error {
 
 			handler := NewConnHandler(s)
 			if err := handler.HandleConn(conn); err != nil {
-				slog.Debug("handler exited", "remote", conn.RemoteAddr(), "err", err)
+				slog.Info("handler exited", "remote", conn.RemoteAddr(), "err", err)
+			} else {
+				slog.Info("handler exited normally", "remote", conn.RemoteAddr())
 			}
 		}()
 	}

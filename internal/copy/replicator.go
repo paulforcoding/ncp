@@ -39,11 +39,13 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 
 // Run consumes items from discoverCh and sends results to resultCh.
 func (r *Replicator) Run(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) {
+	slog.Info("replicator started", "id", r.id, "skipByMtime", r.skipByMtime, "cksumAlgo", r.cksumAlgo)
 	for item := range discoverCh {
 		result := r.copyOne(ctx, item)
 		resultCh <- result
 	}
 	files, bytes := r.metrics.Totals()
+	slog.Info("replicator finished", "id", r.id, "files", files, "bytes", bytes)
 	if err := r.dst.EndTask(ctx, storage.TaskSummary{Files: files, Bytes: bytes}); err != nil {
 		slog.Error("replicator task end failed", "replicatorId", r.id, "error", err)
 	}
@@ -51,7 +53,9 @@ func (r *Replicator) Run(ctx context.Context, discoverCh <-chan storage.Discover
 
 func (r *Replicator) copyOne(ctx context.Context, item storage.DiscoverItem) model.FileResult {
 	if r.skipByMtime {
+		slog.Debug("replicator: checking skip-by-mtime", "id", r.id, "relPath", item.RelPath)
 		if skipped, _ := ShouldSkipCopy(ctx, r.dst, item); skipped {
+			slog.Debug("replicator: skipped by mtime", "id", r.id, "relPath", item.RelPath)
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,

@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/zp001/ncp/internal/protocol"
@@ -66,16 +67,21 @@ func NewDestination(addr, basePath, configJSON string) (*Destination, error) {
 
 // BeginTask establishes the TCP connection and sends MsgInit.
 func (d *Destination) BeginTask(ctx context.Context, taskID string) error {
+	slog.Info("remote dest: dialing", "addr", d.addr, "basePath", d.basePath, "taskID", taskID)
 	conn, err := protocol.Dial(d.addr)
 	if err != nil {
+		slog.Info("remote dest: dial failed", "addr", d.addr, "err", err)
 		return fmt.Errorf("remote destination dial %s: %w", d.addr, err)
 	}
+	slog.Info("remote dest: dial succeeded, sending MsgInit", "addr", d.addr)
 
 	initMsg := &protocol.InitMsg{BasePath: d.basePath, Mode: protocol.ModeDestination, TaskID: taskID, ConfigJSON: d.configJSON}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
+		slog.Info("remote dest: MsgInit failed", "addr", d.addr, "err", err)
 		return fmt.Errorf("remote init %s: %w", d.addr, err)
 	}
+	slog.Info("remote dest: MsgInit acknowledged", "addr", d.addr, "taskID", taskID)
 
 	d.conn = conn
 	return nil
@@ -205,6 +211,7 @@ func (d *Destination) Stat(ctx context.Context, relPath string) (storage.Discove
 	if d.conn == nil {
 		return storage.DiscoverItem{}, fmt.Errorf("remote destination not connected")
 	}
+	slog.Debug("remote dest: sending MsgStat", "relPath", relPath)
 	msg := &protocol.StatMsg{RelPath: d.fullPath(relPath)}
 	f, err := d.conn.SendAndRecv(protocol.MsgStat, msg.Encode())
 	if err != nil {

@@ -101,9 +101,11 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 	// 1. Wait for MsgInit
 	frame, err := conn.Recv()
 	if err != nil {
+		slog.Info("handler: recv MsgInit failed", "err", err)
 		return err
 	}
 	if frame.Type != protocol.MsgInit {
+		slog.Info("handler: expected MsgInit", "got", fmt.Sprintf("0x%02X", frame.Type))
 		return fmt.Errorf("expected MsgInit, got 0x%02X", frame.Type)
 	}
 	initMsg := &protocol.InitMsg{}
@@ -111,6 +113,8 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error()))
 		return err
 	}
+
+	slog.Info("handler: received MsgInit", "mode", initMsg.Mode, "taskID", initMsg.TaskID, "basePath", initMsg.BasePath, "configJSONLen", len(initMsg.ConfigJSON))
 
 	// Reject old clients that don't send Mode, TaskID, or ConfigJSON
 	if initMsg.Mode == 0 || initMsg.TaskID == "" {
@@ -135,9 +139,14 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		h.server.ApplyConfig(&serverCfg)
 
 		// Setup ProgramLog from client config
+		slog.Info("handler: about to SetupProgramLog", "output", serverCfg.ProgramLogOutput, "level", serverCfg.ProgramLogLevel)
 		if err := filelog.SetupProgramLog(serverCfg.ProgramLogOutput, serverCfg.ProgramLogLevel); err != nil {
 			slog.Warn("failed to setup program log from client config", "error", err)
+		} else {
+			slog.Info("handler: SetupProgramLog succeeded")
 		}
+
+		slog.Info("handler: first connection, server configured", "mode", initMsg.Mode, "taskID", initMsg.TaskID, "basePath", initMsg.BasePath)
 
 		// Create walker for Source mode
 		if initMsg.Mode == protocol.ModeSource {
@@ -148,6 +157,7 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 
 		h.server.mode = initMsg.Mode
 		h.server.taskID = initMsg.TaskID
+		slog.Info("handler: first connection configured, about to Unlock")
 	} else {
 		if initMsg.Mode != h.server.mode {
 			h.server.mu.Unlock()
@@ -161,8 +171,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 				fmt.Sprintf("server serving task %q, restart to switch", h.server.taskID)))
 			return fmt.Errorf("taskID mismatch")
 		}
+		slog.Info("handler: reconnection accepted", "mode", initMsg.Mode, "taskID", initMsg.TaskID)
 	}
 	h.server.mu.Unlock()
+	slog.Info("handler: unlocked, preparing to send Ack")
 
 	h.basePath = initMsg.BasePath
 	h.mode = initMsg.Mode
@@ -171,20 +183,26 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		h.walker = h.server.walker
 	}
 
+	slog.Info("handler: sending MsgInit Ack")
 	_ = conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode())
+	slog.Info("handler: MsgInit acknowledged, entering message loop", "basePath", h.basePath, "mode", h.mode)
 
 	// 2. Message loop
+	msgCount := 0
 	for {
 		frame, err := conn.Recv()
 		if err != nil {
+			slog.Info("handler: message loop recv error", "msgCount", msgCount, "err", err)
 			return err
 		}
 
+		msgCount++
 		var respType uint8
 		var respPayload []byte
 
 		switch frame.Type {
 		case protocol.MsgTaskDone:
+			slog.Info("handler: MsgTaskDone received", "msgCount", msgCount)
 			respType = protocol.MsgAck
 			respPayload = (&protocol.AckMsg{ResultCode: 0}).Encode()
 			_ = conn.Send(respType, respPayload)
@@ -210,6 +228,7 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgAbortFile:
 			respType, respPayload = h.handleAbortFile(frame)
 		case protocol.MsgMkdir:
+			slog.Debug("handler: MsgMkdir", "msgCount", msgCount)
 			respType, respPayload = h.handleMkdir(frame)
 		case protocol.MsgSymlink:
 			respType, respPayload = h.handleSymlink(frame)
@@ -224,13 +243,16 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgPread:
 			respType, respPayload = h.handlePread(frame)
 		case protocol.MsgStat:
+			slog.Debug("handler: MsgStat", "msgCount", msgCount)
 			respType, respPayload = h.handleStat(frame)
 		default:
+			slog.Info("handler: unknown message type", "type", fmt.Sprintf("0x%02X", frame.Type), "msgCount", msgCount)
 			respType = protocol.MsgError
 			respPayload = protocol.EncodeError(model.ErrProtocol, "unknown message type")
 		}
 
 		if err := conn.Send(respType, respPayload); err != nil {
+			slog.Info("handler: send response failed", "msgCount", msgCount, "err", err)
 			return err
 		}
 	}
