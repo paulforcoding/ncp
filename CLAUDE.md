@@ -1,16 +1,31 @@
 # ncp — Claude 项目指南
 
-> Agent-First 的大规模文件复制工具，支持 DB 断点续传、结构化输出和多端存储。
+> 对 AI Agent 友好、使用 DB 实现断点续传的海量文件复制工具。ncp 是 `cp` 的多服务器扩展，目录和文件的行为必须与 `cp` 保持一致，偏离 `cp` 行为即为 bug。
 
 ## 1. 项目概览
 
-ncp 是一个面向海量文件迁移的命令行工具，核心设计目标：
+ncp 面向企业海量文件和对象（OSS）的复制与迁移难题，从三方面解决：
+
+### 1.1 DB 记录复制进度
+
+- 千万级文件场景下遍历一次代价极高，ncp 将发现的文件写入 DB，做到一次复制任务只遍历一次。
+- 每个文件的复制状态持久化到 PebbleDB。海量场景下中断是常态，DB 记录使得断点续传成本极低，传统海量复制变成可分多次逐步完成的过程。
+- 选用写快读慢的本地 KV 存储；若任务从未中断，DB 只写不读，对性能影响最小。辅以并行、阶梯式 IO Size、DirectIO 等手段加速复制。
+
+### 1.2 对 AI Agent 友好
+
+- 海量迁移耗时数小时至数天，运维无法实时盯屏。ncp 输出结构化 NDJSON FileLog 事件（`file_complete`、`file_metadata_complete`、`progress_summary`），专供 Agent 和脚本程序化消费，Agent 只在出现问题时才通知人类。
+- 配套 Skill 使 Agent 掌握 ncp 操作知识。
+
+### 1.3 数据可验证
+
+- 跨服务器复制默认使用 md5 做数据比对。
+- 一个"源+目标"组合即为一个 task，task 下可有多轮 run，每轮可选择 copy 或 cksum 动作。task 可以先复制再比对，也可以先比对再增量复制，最终达到复制和校验均 100% 完成。
+
+#核心设计要点：
 
 - **海量规模**：流水线架构（Walker → Replicator → DBWriter），内存占用与文件数量无关，已验证支持 1000万+ 文件。
-- **精确断点续传**：每个文件的复制/校验状态持久化到 PebbleDB，随时中断、精确恢复。
-- **Agent-First 输出**：结构化 NDJSON 事件流（`file_complete`、`file_metadata_complete`、`progress_summary`），供脚本和 Agent 消费。
 - **多端存储**：本地文件系统、远程 ncp 服务器（`ncp://`）、阿里云 OSS（`oss://`）、腾讯云 COS（`cos://`）、华为云 OBS（`obs://`）。
-- **复制-校验闭环**：支持 "先复制再校验" 和 "先校验再增量复制" 两种工作流。
 
 ### 支持的操作
 
@@ -116,12 +131,17 @@ integration_test/     # 集成测试（本地↔OSS↔远程 交叉测试）
 
 ### 2.5 Path Semantics
 
-**Copy:** `ncp copy` wraps all sources in `BasenamePrefixedSource`, so every source (single or multiple) is placed under its basename as a subdirectory of `dst`.
+**Copy:** `ncp copy` path semantics align with `cp`:
+
+- Single source + dst doesn't exist → copy AS dst (no basename prefix)
+- Single source + dst exists as directory → copy INTO dst (basename prefix)
+- Multiple sources + dst exists as directory → copy INTO dst (basename prefix)
+- Multiple sources + dst doesn't exist → error
 
 ```
-ncp copy /data/dir /tmp/           → /tmp/dir/...
-ncp copy a b /tmp/                 → /tmp/a/..., /tmp/b/...
-ncp copy oss://bucket/ /tmp/       → /tmp/bucket/...
+ncp copy /data/dir /tmp/newname     → /tmp/newname/...     (dst doesn't exist: AS dst)
+ncp copy /data/dir /tmp/existing    → /tmp/existing/dir/...  (dst exists: INTO dst)
+ncp copy a b /tmp/existing          → /tmp/existing/a/..., /tmp/existing/b/...
 ```
 
 **Cksum:** Both `src` and `dst` are explicit base paths. No automatic basename joining is performed.
@@ -151,6 +171,7 @@ type Destination interface {
     Mkdir(ctx, relPath, mode, uid, gid) error
     Symlink(ctx, relPath, target) error
     SetMetadata(ctx, relPath, FileMetadata) error
+    ExistsDir(ctx) (bool, error)
 }
 
 // Writer = pwrite 语义
@@ -197,8 +218,8 @@ MVP 阶段使用明文 TCP + 自研帧协议，仅适用于内网/VPN。
 | Magic  | Version | Type | Length | CRC32  |
 | 4 bytes| 1 byte  |1 byte| 4 bytes| 4 bytes|
 +--------+---------+------+--------+--------+
-Magic   = 0x4E435004 ("NCP" + version bump)
-Version = 2
+Magic   = 0x4E435006 ("NCP" + version bump)
+Version = 4
 Header  = 14 bytes
 MaxPayload = 16 MB
 ```
@@ -216,7 +237,7 @@ MaxPayload = 16 MB
 | 7 | Utime | C→S | 设置时间 |
 | 8 | Setxattr | C→S | 设置扩展属性 |
 | 9 | TaskDone | C→S | **task 完成信号**（触发 serve 退出） |
-| 10 | Init | C→S | 初始化连接（携带 Mode + TaskID + BasePath） |
+| 10 | Init | C→S | 初始化连接（携带 Mode + TaskID + BasePath + ConfigJSON） |
 | 11 | List | C→S | 请求目录列表（分页） |
 | 12 | Pread | C→S | 读取文件数据 |
 | 13 | Stat | C→S | 查询文件元数据 |
@@ -395,7 +416,7 @@ make lint           # golangci-lint
 1. **OSS 必须用 profile 引用**:`oss://<profile>@bucket/path/`。profile 集中定义在 `ncp_config.json` 的 `Profiles` 下,`Profiles.<name>.Provider` 必须等于 URL scheme。`--cksum-algorithm` 必须为 `md5`(OSS 用 Content-MD5 校验,不支持 `xxh64`)。
 2. **ncp:// 可作源或目标**：`ncp://` 既可以作为 copy/cksum 的 source，也可以作为 destination。
 3. **多源限制**：多个本地源可以同时复制，但不能混用 `oss://` 或 `ncp://` 作为多源之一。
-4. **copy vs cksum 路径语义不同**：`ncp copy /data/dir /tmp/` 产生 `/tmp/dir/...`（自动加 basename），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
+4. **copy vs cksum 路径语义不同**：`ncp copy` 路径语义对齐 `cp`（dst 不存在时复制 AS dst，dst 存在时复制 INTO dst），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
 5. **DirectIO 与 SyncWrites 互斥**：同时启用会在配置验证时报错。
 5. **Resume 时 channelBuf 不可变**：resume 依赖 DB replay，channel buffer 大小在首次运行时固定。
 6. **任务并发锁**：同一 taskID 不允许并发运行，通过文件锁保护（`task/lock_unix.go`）。

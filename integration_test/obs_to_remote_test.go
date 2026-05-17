@@ -36,7 +36,7 @@ func TestIntegration_OBSToRemote_Copy(t *testing.T) {
 	store := openTestStore(t)
 
 	dstFactory := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(addr, serveDir)
+		return remote.NewDestination(addr, serveDir, "")
 	}
 
 	job := copy.NewJob(src, nil, store,
@@ -89,7 +89,7 @@ func TestIntegration_OBSToRemote_Copy_Resume(t *testing.T) {
 	mu := &sync.Mutex{}
 	count := 0
 	dstFactory := func(id int) (storage.Destination, error) {
-		dst, err := remote.NewDestination(addr, serveDir)
+		dst, err := remote.NewDestination(addr, serveDir, "")
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +112,7 @@ func TestIntegration_OBSToRemote_Copy_Resume(t *testing.T) {
 	}
 
 	dstFactory2 := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(addr, serveDir)
+		return remote.NewDestination(addr, serveDir, "")
 	}
 
 	job2 := copy.NewJob(src, nil, store,

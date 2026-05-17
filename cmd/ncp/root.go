@@ -25,7 +25,7 @@ func main() {
 	copyCmd := &cobra.Command{
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
-		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
+		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Path semantics match cp: single source + dst doesn't exist → copy AS dst; single source + dst exists as directory → copy INTO dst; multiple sources + dst must exist as directory.\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			taskID, _ := cmd.Flags().GetString("task")
 			if taskID != "" {
@@ -40,7 +40,7 @@ func main() {
 	}
 
 	// Config flags (all fields overridable via CLI)
-	copyCmd.Flags().Int("CopyParallelism", 1, "Number of parallel copy workers")
+	copyCmd.Flags().Int("CopyParallelism", 2, "Number of parallel copy workers")
 	copyCmd.Flags().String("ProgramLogLevel", "info", "Log level: trace/debug/info/warn/error/critical")
 	copyCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output: console or file path")
 	copyCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
@@ -61,6 +61,7 @@ func main() {
 	copyCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	copyCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
 	copyCmd.Flags().Int("ChannelBuf", 100000, "Channel buffer size for discover/result queues")
+		copyCmd.Flags().Int64("oss-part-size", 0, "Multipart upload part size in bytes (0 = use default 100MB)")
 
 	// Bind all flags to Viper
 	_ = v.BindPFlag("CopyParallelism", copyCmd.Flags().Lookup("CopyParallelism"))
@@ -77,6 +78,7 @@ func main() {
 	_ = v.BindPFlag("CksumAlgorithm", copyCmd.Flags().Lookup("cksum-algorithm"))
 	_ = v.BindPFlag("SkipByMtime", copyCmd.Flags().Lookup("skip-by-mtime"))
 	_ = v.BindPFlag("ChannelBuf", copyCmd.Flags().Lookup("ChannelBuf"))
+		_ = v.BindPFlag("OSSPartSize", copyCmd.Flags().Lookup("oss-part-size"))
 
 	// resume command
 	resumeCmd := &cobra.Command{
@@ -86,7 +88,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runResume,
 	}
-	resumeCmd.Flags().Int("CopyParallelism", 1, "Number of parallel copy workers")
+	resumeCmd.Flags().Int("CopyParallelism", 2, "Number of parallel copy workers")
 	resumeCmd.Flags().String("ProgramLogLevel", "info", "Log level")
 	resumeCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output")
 	resumeCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
@@ -97,6 +99,7 @@ func main() {
 	resumeCmd.Flags().Bool("dry-run", false, "Preview effective config without executing")
 	resumeCmd.Flags().Bool("skip-by-mtime", true, "Skip files with matching mtime+size (and ETag for OSS)")
 	resumeCmd.Flags().Bool("no-skip-by-mtime", false, "Disable skip-by-mtime, copy/verify all files")
+	resumeCmd.Flags().Int64("oss-part-size", 0, "Multipart upload part size in bytes (0 = use default 100MB)")
 
 	// task command group
 	taskCmd := &cobra.Command{
@@ -143,7 +146,7 @@ func main() {
 		RunE:  runServe,
 	}
 	serveCmd.Flags().String("listen", ":9900", "Listen address (host:port)")
-	serveCmd.Flags().String("serve-temp-dir", "/tmp/ncpserve", "Temporary directory for walker DB")
+
 
 	// cksum command
 	cksumCmd := &cobra.Command{
@@ -153,7 +156,7 @@ func main() {
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runCksum,
 	}
-	cksumCmd.Flags().Int("CopyParallelism", 1, "Number of parallel checksum workers")
+	cksumCmd.Flags().Int("CopyParallelism", 2, "Number of parallel checksum workers")
 	cksumCmd.Flags().String("ProgramLogLevel", "info", "Log level")
 	cksumCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output")
 	cksumCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")

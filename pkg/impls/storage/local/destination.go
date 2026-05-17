@@ -144,3 +144,15 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 
 // EndTask is a no-op for local destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+// ExistsDir checks whether the destination base path exists and is a directory.
+func (d *Destination) ExistsDir(_ context.Context) (bool, error) {
+	info, err := os.Stat(d.base)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}

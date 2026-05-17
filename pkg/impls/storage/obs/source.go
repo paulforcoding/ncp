@@ -25,6 +25,7 @@ const (
 	metaMtime         = metaPrefix + "mtime"
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
+	metaPartSize      = metaPrefix + "part-size"
 	metaXattrPrefix   = metaPrefix + "xattr-"
 )
 
@@ -213,6 +214,54 @@ func (s *Source) Stat(_ context.Context, relPath string) (storage.DiscoverItem, 
 	}
 
 	return item, nil
+}
+
+// ComputeHash returns the pre-computed hash for an OBS object.
+// For single-part objects (etag-md5), the ETag is the hex MD5.
+// For multipart objects (etag-multipart), ncp-md5 custom metadata is used;
+// objects uploaded by non-ncp tools cannot be verified and return ErrChecksum.
+func (s *Source) ComputeHash(_ context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (storage.HashResult, error) {
+	item, err := s.Stat(context.Background(), relPath)
+	if err != nil {
+		return storage.HashResult{}, fmt.Errorf("obs computeHash stat %s: %w", relPath, err)
+	}
+
+	switch item.Algorithm {
+	case "etag-md5":
+		// Single-part ETag is the hex MD5 of the object content.
+		return storage.HashResult{
+			WholeFileHash: hex.EncodeToString(item.Checksum),
+			Algo:          "md5",
+		}, nil
+
+	case "etag-multipart":
+		// Multipart ETag cannot be used as a content hash. Look for
+		// ncp-md5 custom metadata stored during upload.
+		key := s.prefix + relPath
+		md, err := s.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
+			Bucket: s.bucket,
+			Key:    key,
+		})
+		if err != nil {
+			return storage.HashResult{}, fmt.Errorf("obs computeHash head %s: %w", relPath, err)
+		}
+		if md.Metadata != nil {
+			if md5hex := md.Metadata[metaMD5]; md5hex != "" {
+				return storage.HashResult{
+					WholeFileHash: md5hex,
+					Algo:          "md5",
+				}, nil
+			}
+		}
+		return storage.HashResult{
+			Err: fmt.Errorf("etag-multipart without ncp-md5 for %s: cannot verify non-ncp uploaded multipart object: %w", relPath, storage.ErrChecksum),
+		}, nil
+
+	default:
+		return storage.HashResult{
+			Err: fmt.Errorf("unsupported checksum algorithm %q for %s: %w", item.Algorithm, relPath, storage.ErrChecksum),
+		}, nil
+	}
 }
 
 // Base returns the source base URI.

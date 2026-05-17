@@ -20,31 +20,30 @@ import (
 )
 
 const (
-	minPartSize        = 5 << 20 // 5MB — align with OSS for cross-cloud parity
-	smallFileThreshold = 5 << 20 // below this, use single PutObject
+	defaultPartSize = 100 << 20 // 100MB — multipart upload part size and threshold
 )
 
 // Destination implements storage.Destination for Huawei Cloud OBS.
 type Destination struct {
-	client             *obs.ObsClient
-	bucket             string
-	prefix             string
-	retryCfg           RetryConfig
-	multipartThreshold int64
+	client   *obs.ObsClient
+	bucket   string
+	prefix   string
+	retryCfg RetryConfig
+	partSize int64
 }
 
 var _ storage.Destination = (*Destination)(nil)
 
 // Config holds OBS destination configuration.
 type Config struct {
-	Endpoint           string
-	Region             string
-	AK                 string
-	SK                 string
-	Bucket             string
-	Prefix             string
-	RetryCfg           RetryConfig
-	MultipartThreshold int64 // default 1GB; must be >= minPartSize
+	Endpoint string
+	Region   string
+	AK       string
+	SK       string
+	Bucket   string
+	Prefix   string
+	RetryCfg RetryConfig
+	PartSize int64 // multipart upload part size and threshold; default 100MB
 }
 
 // NewDestination creates an OBS Destination.
@@ -57,16 +56,16 @@ func NewDestination(cfg Config) (*Destination, error) {
 	if rc.MaxAttempts == 0 {
 		rc = DefaultRetryConfig()
 	}
-	threshold := cfg.MultipartThreshold
-	if threshold == 0 {
-		threshold = 1 << 30 // 1GB default
+	partSize := cfg.PartSize
+	if partSize == 0 {
+		partSize = defaultPartSize
 	}
 	return &Destination{
-		client:             cli,
-		bucket:             cfg.Bucket,
-		prefix:             cfg.Prefix,
-		retryCfg:           rc,
-		multipartThreshold: threshold,
+		client:   cli,
+		bucket:   cfg.Bucket,
+		prefix:   cfg.Prefix,
+		retryCfg: rc,
+		partSize: partSize,
 	}, nil
 }
 
@@ -128,10 +127,10 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 	key := d.key(relPath)
 	meta := posixMetadata(mode, uid, gid)
 
-	if size < d.multipartThreshold {
+	if size < d.partSize {
 		return newSmallFileWriter(ctx, d.client, d.bucket, key, size, meta, d.retryCfg), nil
 	}
-	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg)
+	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg, d.partSize)
 }
 
 // SetMetadata updates an object's metadata using OBS-native SetObjectMetadata
@@ -168,6 +167,12 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 	}
 	for k, v := range attr.Xattr {
 		merged[metaXattrPrefix+k] = v
+	}
+	if attr.ChecksumHex != "" {
+		merged[metaMD5] = attr.ChecksumHex
+	}
+	if attr.PartSize > 0 {
+		merged[metaPartSize] = strconv.FormatInt(attr.PartSize, 10)
 	}
 
 	err = withRetry(ctx, d.retryCfg, func() error {
@@ -240,6 +245,31 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 
 // EndTask is a no-op for OBS destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+// ExistsDir checks whether the prefix exists as a directory in OBS.
+func (d *Destination) ExistsDir(_ context.Context) (bool, error) {
+	// Try HeadObject on the prefix (directory marker)
+	_, err := d.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
+		Bucket: d.bucket,
+		Key:    d.prefix,
+	})
+	if err == nil {
+		return true, nil
+	}
+	// Fall back to listing objects under the prefix
+	result, err := d.client.ListObjects(&obs.ListObjectsInput{
+		Bucket: d.bucket,
+		ListObjsInput: obs.ListObjsInput{
+			Prefix:    d.prefix,
+			MaxKeys:   1,
+			Delimiter: "/",
+		},
+	})
+	if err != nil {
+		return false, fmt.Errorf("obs existsdir list: %w", err)
+	}
+	return len(result.Contents) > 0 || len(result.CommonPrefixes) > 0, nil
+}
 
 // osModeToProto converts Go os.FileMode to POSIX permission bits.
 func osModeToProto(mode os.FileMode) uint32 {
@@ -352,13 +382,14 @@ type multipartFileWriter struct {
 	parts    []obs.Part
 	partBuf  bytes.Buffer
 	partNum  int // OBS uses int (OSS uses int32)
+	partSize int64
 	md5Hash  hash.Hash
 	retryCfg RetryConfig
 	state    writerState
 	ctx      context.Context
 }
 
-func newMultipartFileWriter(ctx context.Context, client *obs.ObsClient, bucket, key string, meta map[string]string, rc RetryConfig) (*multipartFileWriter, error) {
+func newMultipartFileWriter(ctx context.Context, client *obs.ObsClient, bucket, key string, meta map[string]string, rc RetryConfig, partSize int64) (*multipartFileWriter, error) {
 	out, err := withRetryResult(ctx, rc, func() (*obs.InitiateMultipartUploadOutput, error) {
 		return client.InitiateMultipartUpload(&obs.InitiateMultipartUploadInput{
 			ObjectOperationInput: obs.ObjectOperationInput{
@@ -378,6 +409,7 @@ func newMultipartFileWriter(ctx context.Context, client *obs.ObsClient, bucket, 
 		key:      key,
 		meta:     meta,
 		uploadID: out.UploadId,
+		partSize: partSize,
 		md5Hash:  md5.New(),
 		retryCfg: rc,
 		ctx:      ctx,
@@ -391,16 +423,16 @@ func (w *multipartFileWriter) Write(_ context.Context, p []byte) (int, error) {
 
 	remaining := p
 	for len(remaining) > 0 {
-		space := minPartSize - w.partBuf.Len()
+		space := w.partSize - int64(w.partBuf.Len())
 		n := len(remaining)
-		if n > space {
-			n = space
+		if int64(n) > space {
+			n = int(space)
 		}
 		w.partBuf.Write(remaining[:n])
 		w.md5Hash.Write(remaining[:n])
 		remaining = remaining[n:]
 
-		if w.partBuf.Len() >= minPartSize {
+		if int64(w.partBuf.Len()) >= w.partSize {
 			if err := w.flushPart(); err != nil {
 				return len(p) - len(remaining), err
 			}

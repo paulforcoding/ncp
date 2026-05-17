@@ -1,6 +1,6 @@
 module github.com/zp001/ncp
 
-go 1.23.0
+go 1.25.0
 
 require (
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.5.0
@@ -54,6 +54,7 @@ require (
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
 	golang.org/x/net v0.33.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
 	google.golang.org/protobuf v1.36.1 // indirect

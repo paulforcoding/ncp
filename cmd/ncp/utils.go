@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zp001/ncp/internal/config"
+	"github.com/zp001/ncp/internal/di"
 	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/internal/task"
@@ -116,4 +117,40 @@ func resolveRemoteSourceMode(store progress.ProgressStore) uint8 {
 		return protocol.ModeSourceNoWalker
 	}
 	return protocol.ModeSource
+}
+
+// notifyRemoteTaskDone dials the remote ncp serve and sends MsgTaskDone
+// after the task has completed. No-op if neither src nor dst is ncp://.
+// srcMode is the mode used for remote sources (ModeSource or ModeSourceNoWalker).
+func notifyRemoteTaskDone(srcBase, dstBase, taskID string, srcMode uint8, configJSON string) error {
+	var addr, basePath string
+	var mode uint8
+
+	if u, err := di.ParsePath(srcBase); err == nil && u.Scheme == "ncp" {
+		addr = u.Host
+		basePath = u.Path
+		mode = srcMode
+	} else if u, err := di.ParsePath(dstBase); err == nil && u.Scheme == "ncp" {
+		addr = u.Host
+		basePath = u.Path
+		mode = protocol.ModeDestination
+	} else {
+		return nil
+	}
+
+	conn, err := protocol.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("dial remote for task done: %w", err)
+	}
+	defer conn.Close()
+
+	initMsg := &protocol.InitMsg{BasePath: basePath, Mode: mode, TaskID: taskID, ConfigJSON: configJSON}
+	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
+		return fmt.Errorf("send init for task done: %w", err)
+	}
+
+	if _, err := conn.SendMsgRecvAck(protocol.MsgTaskDone, (&protocol.TaskDoneMsg{}).Encode()); err != nil {
+		return fmt.Errorf("send task done: %w", err)
+	}
+	return nil
 }

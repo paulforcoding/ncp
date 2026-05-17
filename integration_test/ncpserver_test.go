@@ -24,14 +24,14 @@ func TestNcpserverList(t *testing.T) {
 	os.Symlink("file1.txt", filepath.Join(root, "link1"))
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	srv := ncpserver.NewServer(ln, t.TempDir())
+	srv := ncpserver.NewServer(ln)
 	go srv.Serve()
 	defer srv.Shutdown()
 
 	conn, _ := protocol.Dial(ln.Addr().String())
 	defer conn.Close()
 
-	initMsg := &protocol.InitMsg{BasePath: root, Mode: protocol.ModeSource, TaskID: "test"}
+	initMsg := &protocol.InitMsg{BasePath: root, Mode: protocol.ModeSource, TaskID: "test", ConfigJSON: `{"ProgramLogLevel":"info"}`}
 	_, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode())
 	if err != nil {
 		t.Fatalf("init: %v", err)
@@ -62,7 +62,7 @@ func TestNcpserverRemoteWalk(t *testing.T) {
 	os.Symlink("file1.txt", filepath.Join(root, "link1"))
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	srv := ncpserver.NewServer(ln, t.TempDir())
+	srv := ncpserver.NewServer(ln)
 	go srv.Serve()
 	defer srv.Shutdown()
 

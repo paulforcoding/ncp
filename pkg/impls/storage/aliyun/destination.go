@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	minPartSize = 5 << 20 // 5MB — OSS multipart minimum
+	defaultPartSize = 100 << 20 // 100MB — multipart upload part size and threshold
 
 	metaPrefix = "ncp-"
 
@@ -32,30 +32,31 @@ const (
 	metaMtime         = metaPrefix + "mtime"
 	metaSymlinkTarget = metaPrefix + "symlink-target"
 	metaMD5           = metaPrefix + "md5"
+	metaPartSize      = metaPrefix + "part-size"
 	metaXattrPrefix   = metaPrefix + "xattr-"
 )
 
 // Destination implements storage.Destination for Alibaba Cloud OSS.
 type Destination struct {
-	client             *oss.Client
-	bucket             string
-	prefix             string
-	retryCfg           RetryConfig
-	multipartThreshold int64
+	client   *oss.Client
+	bucket   string
+	prefix   string
+	retryCfg RetryConfig
+	partSize int64
 }
 
 var _ storage.Destination = (*Destination)(nil)
 
 // Config holds OSS destination configuration.
 type Config struct {
-	Endpoint           string
-	Region             string
-	AK                 string
-	SK                 string
-	Bucket             string
-	Prefix             string
-	RetryCfg           RetryConfig
-	MultipartThreshold int64 // default 1GB; must be >= minPartSize
+	Endpoint string
+	Region   string
+	AK       string
+	SK       string
+	Bucket   string
+	Prefix   string
+	RetryCfg RetryConfig
+	PartSize int64 // multipart upload part size and threshold; default 100MB
 }
 
 // NewDestination creates an OSS Destination.
@@ -71,17 +72,17 @@ func NewDestination(cfg Config) (*Destination, error) {
 		retryCfg = DefaultRetryConfig()
 	}
 
-	threshold := cfg.MultipartThreshold
-	if threshold == 0 {
-		threshold = 1 << 30 // 1GB default
+	partSize := cfg.PartSize
+	if partSize == 0 {
+		partSize = defaultPartSize
 	}
 
 	return &Destination{
-		client:             client,
-		bucket:             cfg.Bucket,
-		prefix:             cfg.Prefix,
-		retryCfg:           retryCfg,
-		multipartThreshold: threshold,
+		client:   client,
+		bucket:   cfg.Bucket,
+		prefix:   cfg.Prefix,
+		retryCfg: retryCfg,
+		partSize: partSize,
 	}, nil
 }
 
@@ -128,10 +129,10 @@ func (d *Destination) OpenFile(ctx context.Context, relPath string, size int64, 
 	key := d.key(relPath)
 	meta := posixMetadata(mode, uid, gid)
 
-	if size < d.multipartThreshold {
+	if size < d.partSize {
 		return newSmallFileWriter(ctx, d.client, d.bucket, key, size, meta, d.retryCfg), nil
 	}
-	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg)
+	return newMultipartFileWriter(ctx, d.client, d.bucket, key, meta, d.retryCfg, d.partSize)
 }
 
 // SetMetadata updates an object's metadata using CopyObject with REPLACE directive.
@@ -168,6 +169,12 @@ func (d *Destination) SetMetadata(ctx context.Context, relPath string, attr stor
 	for k, v := range attr.Xattr {
 		merged[metaXattrPrefix+k] = v
 	}
+	if attr.ChecksumHex != "" {
+		merged[metaMD5] = attr.ChecksumHex
+	}
+	if attr.PartSize > 0 {
+		merged[metaPartSize] = strconv.FormatInt(attr.PartSize, 10)
+	}
 
 	err = withRetry(ctx, d.retryCfg, func() error {
 		_, err := d.client.CopyObject(ctx, &oss.CopyObjectRequest{
@@ -195,6 +202,38 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 
 // EndTask is a no-op for OSS destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
+
+// ExistsDir checks whether the prefix exists as a directory in OSS.
+// It first tries HeadObject on the prefix itself (directory marker object),
+// then falls back to ListObjects to check if any objects exist under the prefix.
+func (d *Destination) ExistsDir(ctx context.Context) (bool, error) {
+	// Try HeadObject on the prefix (directory marker)
+	_, err := withRetryResult(ctx, d.retryCfg, func() (*oss.HeadObjectResult, error) {
+		return d.client.HeadObject(ctx, &oss.HeadObjectRequest{
+			Bucket: oss.Ptr(d.bucket),
+			Key:    oss.Ptr(d.prefix),
+		})
+	})
+	if err == nil {
+		return true, nil
+	}
+	// Fall back to listing objects under the prefix
+	result, err := withRetryResult(ctx, d.retryCfg, func() (*oss.ListObjectsV2Result, error) {
+		return d.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+			Bucket:    oss.Ptr(d.bucket),
+			Prefix:    oss.Ptr(d.prefix),
+			MaxKeys:   1,
+			Delimiter: oss.Ptr("/"),
+		})
+	})
+	if err != nil {
+		return false, fmt.Errorf("oss existsdir list: %w", err)
+	}
+	if result == nil {
+		return false, nil
+	}
+	return len(result.Contents) > 0 || len(result.CommonPrefixes) > 0, nil
+}
 
 // Stat returns metadata for an existing object on the destination (for skip-by-mtime).
 func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
@@ -358,13 +397,14 @@ type multipartFileWriter struct {
 	parts    []oss.UploadPart
 	partBuf  bytes.Buffer
 	partNum  int32
+	partSize int64
 	md5Hash  hash.Hash
 	retryCfg RetryConfig
 	state    writerState
 	ctx      context.Context
 }
 
-func newMultipartFileWriter(ctx context.Context, client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig) (*multipartFileWriter, error) {
+func newMultipartFileWriter(ctx context.Context, client *oss.Client, bucket, key string, meta map[string]string, retryCfg RetryConfig, partSize int64) (*multipartFileWriter, error) {
 	result, err := withRetryResult(ctx, retryCfg, func() (*oss.InitiateMultipartUploadResult, error) {
 		return client.InitiateMultipartUpload(ctx, &oss.InitiateMultipartUploadRequest{
 			Bucket:   oss.Ptr(bucket),
@@ -382,6 +422,7 @@ func newMultipartFileWriter(ctx context.Context, client *oss.Client, bucket, key
 		key:      key,
 		meta:     meta,
 		uploadID: oss.ToString(result.UploadId),
+		partSize: partSize,
 		md5Hash:  md5.New(),
 		retryCfg: retryCfg,
 		ctx:      ctx,
@@ -395,16 +436,16 @@ func (w *multipartFileWriter) Write(_ context.Context, p []byte) (int, error) {
 
 	remaining := p
 	for len(remaining) > 0 {
-		space := minPartSize - w.partBuf.Len()
+		space := w.partSize - int64(w.partBuf.Len())
 		n := len(remaining)
-		if n > space {
-			n = space
+		if int64(n) > space {
+			n = int(space)
 		}
 		w.partBuf.Write(remaining[:n])
 		w.md5Hash.Write(remaining[:n])
 		remaining = remaining[n:]
 
-		if w.partBuf.Len() >= minPartSize {
+		if int64(w.partBuf.Len()) >= w.partSize {
 			if err := w.flushPart(); err != nil {
 				return len(p) - len(remaining), err
 			}

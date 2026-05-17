@@ -23,7 +23,7 @@ func TestReplicatorCopyDir(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "subdir", FileType: model.FileDir, Attr: storage.FileAttr{Mode: 0o755}}
 	result := r.copyOne(context.Background(), item)
 
@@ -49,7 +49,7 @@ func TestReplicatorCopySymlink(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink, Attr: storage.FileAttr{SymlinkTarget: "target.txt"}}
 	result := r.copyOne(context.Background(), item)
 
@@ -77,7 +77,7 @@ func TestReplicatorCopyFile(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: 11, Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
@@ -104,7 +104,7 @@ func TestReplicatorCopyFileErrorNotExist(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "nonexistent.txt", FileType: model.FileRegular, Size: 100, Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
@@ -123,7 +123,7 @@ func TestReplicatorEmptySymlinkTarget(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "link", FileType: model.FileSymlink}
 	result := r.copyOne(context.Background(), item)
 
@@ -142,7 +142,7 @@ func TestReplicatorUnknownFileType(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "unknown", FileType: model.FileType(255)}
 	result := r.copyOne(context.Background(), item)
 
@@ -166,7 +166,7 @@ func TestReplicatorCopyFileWithChecksum(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, false, 0)
 	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: int64(len(content)), Attr: storage.FileAttr{Mode: 0o644}}
 	result := r.copyOne(context.Background(), item)
 
@@ -204,7 +204,7 @@ func TestReplicatorSkipByMtime(t *testing.T) {
 	src, _ := local.NewSource(srcDir)
 	dst, _ := local.NewDestination(dstDir)
 
-	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, true)
+	r := NewReplicator(0, src, dst, nil, 0, model.CksumMD5, &ThroughputMeter{}, true, 0)
 	item := storage.DiscoverItem{RelPath: "file.txt", FileType: model.FileRegular, Size: int64(len(content)), Attr: storage.FileAttr{Mode: 0o644, Mtime: now}}
 	result := r.copyOne(context.Background(), item)
 

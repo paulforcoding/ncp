@@ -41,7 +41,7 @@ func TestIntegration_RemotePush_Basic(t *testing.T) {
 	store := openTestStore(t)
 
 	dstFactory := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(addr, serveDir)
+		return remote.NewDestination(addr, serveDir, "")
 	}
 
 	job := copy.NewJob(srcObj, nil, store,
@@ -96,7 +96,7 @@ func TestIntegration_RemotePush_Parallel(t *testing.T) {
 	store := openTestStore(t)
 
 	dstFactory := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(addr, serveDir)
+		return remote.NewDestination(addr, serveDir, "")
 	}
 
 	job := copy.NewJob(srcObj, nil, store,
@@ -357,7 +357,7 @@ func TestIntegration_RemoteRoundTrip(t *testing.T) {
 	srcObj, _ := local.NewSource(src)
 	pushStore := openTestStore(t)
 	dstFactory := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(pushAddr, pushServeDir)
+		return remote.NewDestination(pushAddr, pushServeDir, "")
 	}
 
 	pushJob := copy.NewJob(srcObj, nil, pushStore,
@@ -759,7 +759,7 @@ func TestIntegration_RemoteToRemote_Copy(t *testing.T) {
 		return remote.NewSource(srcAddr, srcDir)
 	}
 	dstFactory := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(dstAddr, dstDir)
+		return remote.NewDestination(dstAddr, dstDir, "")
 	}
 
 	job := copy.NewJob(srcObj, nil, store,
@@ -829,7 +829,7 @@ func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
 	mu := &sync.Mutex{}
 	count := 0
 	dstFactory := func(id int) (storage.Destination, error) {
-		dst, err := remote.NewDestination(dstAddr, dstDir)
+		dst, err := remote.NewDestination(dstAddr, dstDir, "")
 		if err != nil {
 			return nil, err
 		}
@@ -859,7 +859,7 @@ func TestIntegration_RemoteToRemote_Copy_Resume(t *testing.T) {
 	}
 
 	dstFactory2 := func(id int) (storage.Destination, error) {
-		return remote.NewDestination(dstAddr, dstDir)
+		return remote.NewDestination(dstAddr, dstDir, "")
 	}
 
 	job2 := copy.NewJob(srcObj, nil, store,

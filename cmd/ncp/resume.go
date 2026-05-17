@@ -107,13 +107,14 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 
 	srcMode := resolveRemoteSourceMode(store)
 
+	configJSON := buildConfigJSON(cfg)
 	var src storage.Source
 	var dst storage.Destination
 	var extraOpts []copy.JobOption
-	if firstRunJobType(meta) == task.JobTypeCksum {
-		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode)
+	if !meta.BasenamePrefix {
+		src, dst, extraOpts, err = setupCopyDepsPlain(cfg, meta.SrcBase, meta.DstBase, srcMode, configJSON)
 	} else {
-		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+		src, dst, extraOpts, err = setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode, configJSON)
 	}
 	if err != nil {
 		return 1, err
@@ -150,7 +151,7 @@ func runResumeCopy(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, tas
 		_ = dst.EndTask(ctx, storage.TaskSummary{})
 	}
 
-	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode, configJSON)
 
 	return exitCode, err
 }
@@ -168,13 +169,14 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 	// Select source setup matching DB relPath format:
 	// - Original cksum task: relPaths have no prefix → use setupCksumDeps
 	// - Original copy task: relPaths have basename prefix → src needs BasenamePrefixedSource wrapping
+	configJSON := buildConfigJSON(cfg)
 	var src storage.Source
 	var dst storage.Source
 	var extraOpts []cksum.CksumJobOption
-	if firstRunJobType(meta) == task.JobTypeCopy {
-		src, dst, extraOpts, err = setupCksumDepsFromCopy(cfg, meta, srcMode)
+	if meta.BasenamePrefix {
+		src, dst, extraOpts, err = setupCksumDepsFromCopy(cfg, meta, srcMode, configJSON)
 	} else {
-		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode, configJSON)
 	}
 	if err != nil {
 		return 1, err
@@ -206,18 +208,18 @@ func runResumeCksum(cfg *config.Config, meta *task.Meta, fl *filelog.Emitter, ta
 	}
 
 	// Notify remote serve to exit
-	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode, configJSON)
 
 	return exitCode, err
 }
 
 // setupCksumDepsFromCopy creates cksum deps when resuming from a copy-origin task.
 // The DB has basename-prefixed relPaths, so src needs BasenamePrefixedSource wrapping.
-func setupCksumDepsFromCopy(cfg *config.Config, meta *task.Meta, srcMode uint8) (storage.Source, storage.Source, []cksum.CksumJobOption, error) {
+func setupCksumDepsFromCopy(cfg *config.Config, meta *task.Meta, srcMode uint8, configJSON string) (storage.Source, storage.Source, []cksum.CksumJobOption, error) {
 	var extraOpts []cksum.CksumJobOption
 
 	srcPaths := strings.Split(meta.SrcBase, ",")
-	copySrc, _, copyExtra, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode)
+	copySrc, _, copyExtra, err := setupCopyDepsMulti(cfg, srcPaths, meta.DstBase, srcMode, configJSON)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -229,14 +231,14 @@ func setupCksumDepsFromCopy(cfg *config.Config, meta *task.Meta, srcMode uint8) 
 	src := copySrc
 
 	// dst is a Source (for reading), not a Destination
-	dst, err := di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+	dst, err := di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode, configJSON)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
 	}
 	du, _ := di.ParsePath(meta.DstBase)
 	if du.Scheme == "ncp" {
 		dstFactory := func(id int) (storage.Source, error) {
-			return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode)
+			return di.NewSourceWithRemoteMode(meta.DstBase, cfg.Profiles, srcMode, configJSON)
 		}
 		extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
 	}
@@ -245,7 +247,7 @@ func setupCksumDepsFromCopy(cfg *config.Config, meta *task.Meta, srcMode uint8) 
 		su, _ := di.ParsePath(sp)
 		if su.Scheme == "ncp" {
 			srcFactory := func(id int) (storage.Source, error) {
-				return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode)
+				return di.NewSourceWithRemoteMode(sp, cfg.Profiles, srcMode, configJSON)
 			}
 			extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
 			break

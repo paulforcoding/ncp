@@ -1,6 +1,9 @@
 # Binaries
 /ncp
 /ncp-linux-amd64
+/ncp-linux-arm64
+/ncp-darwin-amd64
+/ncp-darwin-arm64
 /ncp-linux
 
 # Progress storage

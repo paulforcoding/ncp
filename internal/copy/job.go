@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zp001/ncp/internal/task"
@@ -32,6 +33,10 @@ type Job struct {
 	resume         bool
 	skipByMtime    bool
 	metrics        *ThroughputMeter
+	partSize       int64
+
+	fatalErr atomic.Value // error — fatal factory error that stops the job
+	cancel   context.CancelFunc
 }
 
 // NewJob creates a copy Job.
@@ -40,7 +45,7 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 		src:            src,
 		dst:            dst,
 		store:          store,
-		parallelism:    1,
+		parallelism:    2,
 		channelBuf:     100000,
 		ensureDirMtime: true,
 		metrics:        &ThroughputMeter{},
@@ -69,6 +74,7 @@ func WithEnsureDirMtime(v bool) JobOption               { return func(j *Job) { 
 func WithResume(v bool) JobOption                       { return func(j *Job) { j.resume = v } }
 func WithSkipByMtime(v bool) JobOption                  { return func(j *Job) { j.skipByMtime = v } }
 func WithCksumAlgo(algo model.CksumAlgorithm) JobOption { return func(j *Job) { j.cksumAlgo = algo } }
+func WithPartSize(size int64) JobOption                { return func(j *Job) { j.partSize = size } }
 func WithSrcFactory(f func(id int) (storage.Source, error)) JobOption {
 	return func(j *Job) { j.srcFactory = f }
 }
@@ -84,12 +90,16 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 	discoverCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
+	jobCtx, jobCancel := context.WithCancel(ctx)
+	j.cancel = jobCancel
+	defer jobCancel()
+
 	logDuration := durationFromSec(j.logInterval)
 	walker := NewWalker(j.src, j.store, j.fileLog, logDuration)
 	dbWriter := NewDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
 	// Start the pipeline
-	replWg := j.startReplicators(ctx, discoverCh, resultCh)
+	replWg := j.startReplicators(jobCtx, discoverCh, resultCh)
 	dbWg := j.startDBWriter(dbWriter, resultCh)
 
 	go func() {
@@ -100,13 +110,16 @@ func (j *Job) Run(ctx context.Context) (int, error) {
 	// Populate discoverCh
 	var walkErr error
 	if j.resume {
-		walkErr = j.populateFromResume(ctx, walker, discoverCh)
+		walkErr = j.populateFromResume(jobCtx, walker, discoverCh)
 	} else {
-		walkErr = walker.Run(ctx, discoverCh)
+		walkErr = walker.Run(jobCtx, discoverCh)
 	}
 
 	dbWg.Wait()
 
+	if fe := j.fatalErr.Load(); fe != nil {
+		return 2, fe.(error)
+	}
 	return j.finalize(ctx, walker, dbWriter, walkErr)
 }
 
@@ -133,6 +146,7 @@ func (j *Job) populateFromResume(ctx context.Context, walker *Walker, discoverCh
 
 func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) *sync.WaitGroup {
 	var wg sync.WaitGroup
+	slog.Info("starting replicators", "count", j.parallelism, "dstFactory", j.dstFactory != nil, "srcFactory", j.srcFactory != nil)
 	for i := 0; i < j.parallelism; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -143,11 +157,11 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 				var err error
 				src, err = j.srcFactory(id)
 				if err != nil {
-					j.sendFactoryError(id, discoverCh, resultCh, err)
+					j.drainOnFatal(fmt.Errorf("replicator %d: create source: %w", id, err))
 					return
 				}
 				if err := src.BeginTask(ctx, j.taskID); err != nil {
-					j.sendFactoryError(id, discoverCh, resultCh, err)
+					j.drainOnFatal(fmt.Errorf("replicator %d: begin source task: %w", id, err))
 					return
 				}
 				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
@@ -158,32 +172,31 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 				var err error
 				dst, err = j.dstFactory(id)
 				if err != nil {
-					j.sendFactoryError(id, discoverCh, resultCh, err)
+					j.drainOnFatal(fmt.Errorf("replicator %d: create destination: %w", id, err))
 					return
 				}
+				slog.Info("replicator: created destination via factory", "id", id)
 				if err := dst.BeginTask(ctx, j.taskID); err != nil {
-					j.sendFactoryError(id, discoverCh, resultCh, err)
+					j.drainOnFatal(fmt.Errorf("replicator %d: begin destination task: %w", id, err))
 					return
 				}
+				slog.Info("replicator: destination BeginTask succeeded", "id", id)
+			} else {
+				slog.Info("replicator: using shared destination", "id", id, "dstNil", dst == nil)
 			}
 
-			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime)
+			r := NewReplicator(id, src, dst, j.fileLog, j.ioSize, j.cksumAlgo, j.metrics, j.skipByMtime, j.partSize)
 			r.Run(ctx, discoverCh, resultCh)
 		}(i)
 	}
 	return &wg
 }
 
-func (j *Job) sendFactoryError(id int, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult, err error) {
-	for item := range discoverCh {
-		resultCh <- model.FileResult{
-			RelPath:    item.RelPath,
-			FileType:   item.FileType,
-			FileSize:   item.Size,
-			CopyStatus: model.CopyError,
-			Algorithm:  string(j.cksumAlgo),
-			Err:        fmt.Errorf("destination setup for replicator %d: %w", id, err),
-		}
+func (j *Job) drainOnFatal(err error) {
+	slog.Error("fatal error", "error", err)
+	j.fatalErr.Store(err)
+	if j.cancel != nil {
+		j.cancel()
 	}
 }
 
@@ -199,6 +212,17 @@ func (j *Job) startDBWriter(dbWriter *DBWriter, resultCh <-chan model.FileResult
 
 func (j *Job) finalize(ctx context.Context, walker *Walker, dbWriter *DBWriter, walkErr error) (int, error) {
 	done, failed, total := dbWriter.Stats()
+
+	if fe := j.fatalErr.Load(); fe != nil {
+		exitCode := 2
+		if j.fileLog != nil {
+			dbWriter.EmitFinalSummary(exitCode)
+		}
+		if j.taskID != "" {
+			_, _ = GenerateReport(j.taskID, j.store, done, failed, exitCode)
+		}
+		return exitCode, fe.(error)
+	}
 
 	exitCode := 0
 	var runErr error

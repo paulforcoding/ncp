@@ -3,7 +3,9 @@ package cksum
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zp001/ncp/internal/copy"
@@ -30,6 +32,9 @@ type CksumJob struct {
 	resume      bool
 	skipByMtime bool
 	metrics     *copy.ThroughputMeter
+
+	fatalErr atomic.Value // error — fatal factory error that stops the job
+	cancel   context.CancelFunc
 }
 
 // NewCksumJob creates a cksum job.
@@ -38,7 +43,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 		src:         src,
 		dst:         dst,
 		store:       store,
-		parallelism: 1,
+		parallelism: 2,
 		cksumAlgo:   model.DefaultCksumAlgorithm,
 		channelBuf:  100000,
 		metrics:     &copy.ThroughputMeter{},
@@ -82,11 +87,15 @@ func (j *CksumJob) Run(ctx context.Context) (int, error) {
 	cksumCh := make(chan storage.DiscoverItem, j.channelBuf)
 	resultCh := make(chan model.FileResult, j.channelBuf)
 
+	jobCtx, jobCancel := context.WithCancel(ctx)
+	j.cancel = jobCancel
+	defer jobCancel()
+
 	logDuration := durationFromSec(j.logInterval)
 	walker := copy.NewWalker(j.src, j.store, j.fileLog, logDuration)
 	dbWriter := NewCksumDBWriter(j.store, walker, j.fileLog, j.metrics, logDuration)
 
-	workerWg := j.startCksumWorkers(ctx, cksumCh, resultCh)
+	workerWg := j.startCksumWorkers(jobCtx, cksumCh, resultCh)
 	dbWg := j.startCksumDBWriter(dbWriter, resultCh)
 
 	go func() {
@@ -96,13 +105,16 @@ func (j *CksumJob) Run(ctx context.Context) (int, error) {
 
 	var walkErr error
 	if j.resume {
-		walkErr = j.populateFromResume(ctx, walker, cksumCh)
+		walkErr = j.populateFromResume(jobCtx, walker, cksumCh)
 	} else {
-		walkErr = walker.Run(ctx, cksumCh)
+		walkErr = walker.Run(jobCtx, cksumCh)
 	}
 
 	dbWg.Wait()
 
+	if fe := j.fatalErr.Load(); fe != nil {
+		return 2, fe.(error)
+	}
 	return j.finalize(walker, dbWriter, walkErr)
 }
 
@@ -139,9 +151,11 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 				var err error
 				src, err = j.srcFactory(id)
 				if err != nil {
+					j.drainOnFatal(fmt.Errorf("cksum worker %d: create source: %w", id, err))
 					return
 				}
 				if err := src.BeginTask(ctx, j.taskID); err != nil {
+					j.drainOnFatal(fmt.Errorf("cksum worker %d: begin source task: %w", id, err))
 					return
 				}
 				defer func() { _ = src.EndTask(ctx, storage.TaskSummary{}) }()
@@ -152,9 +166,11 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 				var err error
 				dst, err = j.dstFactory(id)
 				if err != nil {
+					j.drainOnFatal(fmt.Errorf("cksum worker %d: create destination: %w", id, err))
 					return
 				}
 				if err := dst.BeginTask(ctx, j.taskID); err != nil {
+					j.drainOnFatal(fmt.Errorf("cksum worker %d: begin destination task: %w", id, err))
 					return
 				}
 				defer func() { _ = dst.EndTask(ctx, storage.TaskSummary{}) }()
@@ -165,6 +181,14 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 		}(i)
 	}
 	return &wg
+}
+
+func (j *CksumJob) drainOnFatal(err error) {
+	slog.Error("fatal error", "error", err)
+	j.fatalErr.Store(err)
+	if j.cancel != nil {
+		j.cancel()
+	}
 }
 
 func (j *CksumJob) startCksumDBWriter(dbWriter *CksumDBWriter, resultCh <-chan model.FileResult) *sync.WaitGroup {
@@ -179,6 +203,17 @@ func (j *CksumJob) startCksumDBWriter(dbWriter *CksumDBWriter, resultCh <-chan m
 
 func (j *CksumJob) finalize(walker *copy.Walker, dbWriter *CksumDBWriter, walkErr error) (int, error) {
 	pass, mismatch, failed, total := dbWriter.Stats()
+
+	if fe := j.fatalErr.Load(); fe != nil {
+		exitCode := 2
+		if j.fileLog != nil {
+			dbWriter.EmitFinalSummary(exitCode)
+		}
+		if j.taskID != "" {
+			_, _ = GenerateCksumReport(j.taskID, j.store, pass, mismatch, failed, exitCode)
+		}
+		return exitCode, fe.(error)
+	}
 
 	exitCode := 0
 	var runErr error

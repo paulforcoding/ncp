@@ -3,7 +3,10 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,6 +139,53 @@ func newCOSDestination(t *testing.T, env cosEnv, prefix string) *cosbackend.Dest
 	return dst
 }
 
+// newCOSDestinationWithPartSize creates an ncp cos.Destination with custom PartSize.
+func newCOSDestinationWithPartSize(t *testing.T, env cosEnv, prefix string, partSize int64) *cosbackend.Destination {
+	t.Helper()
+	dst, err := cosbackend.NewDestination(cosbackend.Config{
+		Endpoint: env.Endpoint,
+		Region:   env.Region,
+		AK:       env.AK,
+		SK:       env.SK,
+		Bucket:   env.Bucket,
+		Prefix:   prefix,
+		PartSize: partSize,
+	})
+	if err != nil {
+		t.Fatalf("cos.NewDestination: %v", err)
+	}
+	return dst
+}
+
+// cosObjectMetadata holds metadata read from a HeadObject call.
+type cosObjectMetadata struct {
+	ContentLength int64
+	Metadata      map[string]string
+}
+
+// headCOSObjectMetadata reads object metadata via HeadObject.
+func headCOSObjectMetadata(t *testing.T, env cosEnv, prefix, relPath string) cosObjectMetadata {
+	t.Helper()
+	client := newCOSClient(env)
+	ctx := context.Background()
+	key := prefix + relPath
+	resp, err := client.Object.Head(ctx, key, nil)
+	if err != nil {
+		t.Fatalf("HeadObject %s: %v", key, err)
+	}
+	meta := map[string]string{}
+	for k, vs := range resp.Header {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, "x-cos-meta-") {
+			meta[strings.TrimPrefix(lk, "x-cos-meta-")] = vs[0]
+		}
+	}
+	return cosObjectMetadata{
+		ContentLength: resp.ContentLength,
+		Metadata:      meta,
+	}
+}
+
 // seedCOSPrefix uploads a map of relative paths to content under the given prefix.
 func seedCOSPrefix(t *testing.T, env cosEnv, prefix string, files map[string]string) {
 	t.Helper()
@@ -156,7 +206,7 @@ func seedCOSPrefix(t *testing.T, env cosEnv, prefix string, files map[string]str
 				_, err := client.Object.Put(ctx, dirKey, strings.NewReader(""), &cos.ObjectPutOptions{
 					ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
 						ContentType: "application/x-directory",
-						XCosMetaXXX: &http.Header{"ncp-mode": []string{"0755"}},
+						XCosMetaXXX: &http.Header{"x-cos-meta-ncp-mode": []string{"0755"}},
 					},
 				})
 				if err != nil {
@@ -168,7 +218,7 @@ func seedCOSPrefix(t *testing.T, env cosEnv, prefix string, files map[string]str
 
 		_, err := client.Object.Put(ctx, key, strings.NewReader(content), &cos.ObjectPutOptions{
 			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
-				XCosMetaXXX: &http.Header{"ncp-mode": []string{"0644"}},
+				XCosMetaXXX: &http.Header{"x-cos-meta-ncp-mode": []string{"0644"}},
 			},
 		})
 		if err != nil {
@@ -206,11 +256,61 @@ func putCOSObject(t *testing.T, env cosEnv, prefix, relPath, content string) {
 	key := prefix + relPath
 	_, err := client.Object.Put(context.Background(), key, strings.NewReader(content), &cos.ObjectPutOptions{
 		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
-			XCosMetaXXX: &http.Header{"ncp-mode": []string{"0644"}},
+			XCosMetaXXX: &http.Header{"x-cos-meta-ncp-mode": []string{"0644"}},
 		},
 	})
 	if err != nil {
 		t.Fatalf("PutObject %s: %v", key, err)
+	}
+}
+
+// uploadCOSMultipartNoNcpMD5 uploads a multipart object via raw SDK without ncp-md5 metadata.
+func uploadCOSMultipartNoNcpMD5(t *testing.T, env cosEnv, prefix, relPath string, content []byte, partSize int64) {
+	t.Helper()
+	client := newCOSClient(env)
+	ctx := context.Background()
+	key := prefix + relPath
+
+	initResp, _, err := client.Object.InitiateMultipartUpload(ctx, key, nil)
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload %s: %v", key, err)
+	}
+	uploadID := initResp.UploadID
+
+	var parts []cos.Object
+	partNum := 0
+	for offset := int64(0); offset < int64(len(content)); {
+		end := offset + partSize
+		if end > int64(len(content)) {
+			end = int64(len(content))
+		}
+		data := content[offset:end]
+		partNum++
+		partMD5 := md5.Sum(data)
+
+		resp, err := client.Object.UploadPart(ctx, key, uploadID, partNum,
+			bytes.NewReader(data), &cos.ObjectUploadPartOptions{
+				ContentLength: int64(len(data)),
+				ContentMD5:    base64.StdEncoding.EncodeToString(partMD5[:]),
+			})
+		if err != nil {
+			_, _ = client.Object.AbortMultipartUpload(ctx, key, uploadID)
+			t.Fatalf("UploadPart %d: %v", partNum, err)
+		}
+		etag := strings.ToLower(strings.Trim(resp.Header.Get("ETag"), `"`))
+		parts = append(parts, cos.Object{
+			Key:        key,
+			ETag:       etag,
+			PartNumber: partNum,
+		})
+		offset = end
+	}
+
+	_, _, err = client.Object.CompleteMultipartUpload(ctx, key, uploadID, &cos.CompleteMultipartUploadOptions{
+		Parts: parts,
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload %s: %v", key, err)
 	}
 }
 

@@ -21,6 +21,7 @@ type DestConfig struct {
 	SyncWrites  bool
 	IOSize      int
 	IOSizeTiers []model.IOSizeTier
+	OSSPartSize int64
 }
 
 // NewSource creates a Source from srcPath. Cloud schemes require a profile
@@ -84,15 +85,15 @@ func NewSource(srcPath string, profiles map[string]model.Profile) (storage.Sourc
 	}
 }
 
-// NewSourceWithRemoteMode is like NewSource but passes the given mode to remote sources.
-// For non-ncp schemes the mode is ignored.
-func NewSourceWithRemoteMode(srcPath string, profiles map[string]model.Profile, mode uint8) (storage.Source, error) {
+// NewSourceWithRemoteMode is like NewSource but passes the given mode and configJSON to remote sources.
+// For non-ncp schemes the mode and configJSON are ignored.
+func NewSourceWithRemoteMode(srcPath string, profiles map[string]model.Profile, mode uint8, configJSON string) (storage.Source, error) {
 	u, err := ParsePath(srcPath)
 	if err != nil {
 		return nil, err
 	}
 	if u.Scheme == "ncp" {
-		return remote.NewSource(u.Host, u.Path, remote.WithMode(mode))
+		return remote.NewSource(u.Host, u.Path, remote.WithMode(mode), remote.WithConfigJSON(configJSON))
 	}
 	return NewSource(srcPath, profiles)
 }
@@ -123,7 +124,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 		}
 		return local.NewDestinationWithConfig(u.Path, wcfg)
 	case "ncp":
-		return remote.NewDestination(u.Host, u.Path)
+		return remote.NewDestination(u.Host, u.Path, "")
 	case "oss":
 		bucket, prefix := parseOSSURL(u)
 		if bucket == "" {
@@ -136,6 +137,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	case "cos":
 		bucket, prefix := parseCOSURL(u)
@@ -149,6 +151,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	case "obs":
 		bucket, prefix := parseOBSURL(u)
@@ -162,6 +165,7 @@ func NewDestination(dstPath string, cfg DestConfig, profiles map[string]model.Pr
 			SK:       prof.SK,
 			Bucket:   bucket,
 			Prefix:   prefix,
+			PartSize: cfg.OSSPartSize,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported destination scheme: %s", u.Scheme)
@@ -256,6 +260,6 @@ func ParsePath(p string) (*url.URL, error) {
 }
 
 // NewRemoteDestination creates a remote Destination for ncp:// URLs.
-func NewRemoteDestination(addr, basePath string) (storage.Destination, error) {
-	return remote.NewDestination(addr, basePath)
+func NewRemoteDestination(addr, basePath, configJSON string) (storage.Destination, error) {
+	return remote.NewDestination(addr, basePath, configJSON)
 }

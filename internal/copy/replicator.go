@@ -21,10 +21,11 @@ type Replicator struct {
 	cksumAlgo   model.CksumAlgorithm
 	metrics     *ThroughputMeter
 	skipByMtime bool
+	partSize    int64
 }
 
 // NewReplicator creates a Replicator with the given ID.
-func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter, skipByMtime bool) *Replicator {
+func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog FileLogger, ioSize int, cksumAlgo model.CksumAlgorithm, metrics *ThroughputMeter, skipByMtime bool, partSize int64) *Replicator {
 	return &Replicator{
 		id:          id,
 		src:         src,
@@ -34,16 +35,19 @@ func NewReplicator(id int, src storage.Source, dst storage.Destination, fileLog 
 		cksumAlgo:   cksumAlgo,
 		metrics:     metrics,
 		skipByMtime: skipByMtime,
+		partSize:    partSize,
 	}
 }
 
 // Run consumes items from discoverCh and sends results to resultCh.
 func (r *Replicator) Run(ctx context.Context, discoverCh <-chan storage.DiscoverItem, resultCh chan<- model.FileResult) {
+	slog.Info("replicator started", "id", r.id, "skipByMtime", r.skipByMtime, "cksumAlgo", r.cksumAlgo)
 	for item := range discoverCh {
 		result := r.copyOne(ctx, item)
 		resultCh <- result
 	}
 	files, bytes := r.metrics.Totals()
+	slog.Info("replicator finished", "id", r.id, "files", files, "bytes", bytes)
 	if err := r.dst.EndTask(ctx, storage.TaskSummary{Files: files, Bytes: bytes}); err != nil {
 		slog.Error("replicator task end failed", "replicatorId", r.id, "error", err)
 	}
@@ -51,7 +55,9 @@ func (r *Replicator) Run(ctx context.Context, discoverCh <-chan storage.Discover
 
 func (r *Replicator) copyOne(ctx context.Context, item storage.DiscoverItem) model.FileResult {
 	if r.skipByMtime {
+		slog.Debug("replicator: checking skip-by-mtime", "id", r.id, "relPath", item.RelPath)
 		if skipped, _ := ShouldSkipCopy(ctx, r.dst, item); skipped {
+			slog.Debug("replicator: skipped by mtime", "id", r.id, "relPath", item.RelPath)
 			return model.FileResult{
 				RelPath:    item.RelPath,
 				FileType:   item.FileType,
@@ -176,7 +182,7 @@ func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) mo
 	}
 	buf := make([]byte, bufSize)
 
-	h := NewHasher(r.cksumAlgo)
+	h := model.NewHasher(r.cksumAlgo)
 	for {
 		n, readErr := reader.Read(ctx, buf)
 		if n > 0 {
@@ -223,8 +229,11 @@ func (r *Replicator) copyFile(ctx context.Context, item storage.DiscoverItem) mo
 
 	checksumHex := fmt.Sprintf("%x", checksumBytes)
 
-	// Preserve file metadata (mode, uid/gid, atime, mtime, xattr)
-	if err := r.dst.SetMetadata(ctx, item.RelPath, item.Attr); err != nil {
+	// Preserve file metadata (mode, uid/gid, atime, mtime, xattr) and checksum
+	attr := item.Attr
+	attr.ChecksumHex = checksumHex
+	attr.PartSize = r.partSize
+	if err := r.dst.SetMetadata(ctx, item.RelPath, attr); err != nil {
 		return model.FileResult{
 			RelPath:     item.RelPath,
 			FileType:    item.FileType,

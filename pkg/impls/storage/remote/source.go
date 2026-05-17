@@ -21,12 +21,18 @@ func WithMode(mode uint8) SourceOption {
 	return func(s *Source) { s.mode = mode }
 }
 
+// WithConfigJSON sets the ServerConfig JSON for InitMsg.
+func WithConfigJSON(configJSON string) SourceOption {
+	return func(s *Source) { s.configJSON = configJSON }
+}
+
 // Source implements storage.Source for remote ncp servers.
 type Source struct {
-	addr     string         // server address (host:port)
-	basePath string         // URL path (e.g. "/data/backup")
-	conn     *protocol.Conn // instance-level single connection
-	mode     uint8          // ModeSource or ModeSourceNoWalker
+	addr       string         // server address (host:port)
+	basePath   string         // URL path (e.g. "/data/backup")
+	conn       *protocol.Conn // instance-level single connection
+	mode       uint8          // ModeSource or ModeSourceNoWalker
+	configJSON string        // ServerConfig JSON for InitMsg
 }
 
 var _ storage.Source = (*Source)(nil)
@@ -47,7 +53,7 @@ func (s *Source) dialAndInit(taskID string) (*protocol.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("remote source dial %s: %w", s.addr, err)
 	}
-	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: s.mode, TaskID: taskID}
+	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: s.mode, TaskID: taskID, ConfigJSON: s.configJSON}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("remote source init %s: %w", s.addr, err)
@@ -219,4 +225,92 @@ func parseETag(etag string) ([]byte, string) {
 		return b, "etag-md5"
 	}
 	return []byte(etag), "etag-multipart"
+}
+
+func protoAlgoFromModel(algo model.CksumAlgorithm) uint8 {
+	switch algo {
+	case model.CksumXXH64:
+		return protocol.ProtoCksumXXH64
+	default:
+		return protocol.ProtoCksumMD5
+	}
+}
+
+func (s *Source) ComputeHash(ctx context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (storage.HashResult, error) {
+	if s.conn == nil {
+		return storage.HashResult{}, fmt.Errorf("remote source not connected")
+	}
+
+	protoAlgo := protoAlgoFromModel(algo)
+
+	// Open checksum session
+	openMsg := &protocol.ChecksumOpenMsg{Path: relPath, Algo: protoAlgo}
+	f, err := s.conn.SendAndRecv(protocol.MsgChecksumOpen, openMsg.Encode())
+	if err != nil {
+		return storage.HashResult{}, fmt.Errorf("remote checksum open %s: %w", relPath, err)
+	}
+	if f.Type == protocol.MsgError {
+		emsg := &protocol.ErrorMsg{}
+		if derr := emsg.Decode(f.Payload); derr != nil {
+			return storage.HashResult{}, fmt.Errorf("remote checksum open error (undecodable): %w", derr)
+		}
+		return storage.HashResult{}, fmt.Errorf("remote checksum open error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
+	}
+	if f.Type != protocol.MsgChecksumResult {
+		return storage.HashResult{}, fmt.Errorf("remote checksum open: unexpected response type 0x%02X", f.Type)
+	}
+
+	resultMsg := &protocol.ChecksumResultMsg{}
+	if err := resultMsg.Decode(f.Payload); err != nil {
+		return storage.HashResult{}, fmt.Errorf("remote checksum open decode: %w", err)
+	}
+
+	fd := resultMsg.FD
+	chunkHashes := []string{hex.EncodeToString(resultMsg.ChunkHash)}
+	lastCumHash := hex.EncodeToString(resultMsg.CumulativeHash)
+
+	// Read remaining chunks
+	for resultMsg.EOF == 0 {
+		select {
+		case <-ctx.Done():
+			// Best-effort close before returning
+			closeMsg := &protocol.ChecksumCloseMsg{FD: fd}
+			s.conn.SendAndRecv(protocol.MsgChecksumClose, closeMsg.Encode())
+			return storage.HashResult{}, ctx.Err()
+		default:
+		}
+
+		nextMsg := &protocol.ChecksumNextMsg{FD: fd}
+		f, err := s.conn.SendAndRecv(protocol.MsgChecksumNext, nextMsg.Encode())
+		if err != nil {
+			return storage.HashResult{}, fmt.Errorf("remote checksum next %s: %w", relPath, err)
+		}
+		if f.Type == protocol.MsgError {
+			emsg := &protocol.ErrorMsg{}
+			if derr := emsg.Decode(f.Payload); derr != nil {
+				return storage.HashResult{}, fmt.Errorf("remote checksum next error (undecodable): %w", derr)
+			}
+			return storage.HashResult{}, fmt.Errorf("remote checksum next error: code=0x%04X msg=%s", emsg.Code, emsg.Message)
+		}
+		if f.Type != protocol.MsgChecksumResult {
+			return storage.HashResult{}, fmt.Errorf("remote checksum next: unexpected response type 0x%02X", f.Type)
+		}
+
+		if err := resultMsg.Decode(f.Payload); err != nil {
+			return storage.HashResult{}, fmt.Errorf("remote checksum next decode: %w", err)
+		}
+
+		chunkHashes = append(chunkHashes, hex.EncodeToString(resultMsg.ChunkHash))
+		lastCumHash = hex.EncodeToString(resultMsg.CumulativeHash)
+	}
+
+	// Close checksum session
+	closeMsg := &protocol.ChecksumCloseMsg{FD: fd}
+	s.conn.SendAndRecv(protocol.MsgChecksumClose, closeMsg.Encode())
+
+	return storage.HashResult{
+		WholeFileHash: lastCumHash,
+		ChunkHashes:   chunkHashes,
+		Algo:          string(algo),
+	}, nil
 }

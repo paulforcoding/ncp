@@ -17,6 +17,8 @@ type FileAttr struct {
 	Atime         time.Time
 	Xattr         map[string]string
 	SymlinkTarget string // valid only when FileType == FileSymlink
+	ChecksumHex   string // hex-encoded checksum, written to cloud ncp-md5 metadata
+	PartSize      int64  // multipart upload part-size, written to cloud ncp-part-size metadata; 0 = not applicable
 }
 
 // DiscoverItem is the work unit produced by Walker and consumed by Replicator.
@@ -40,3 +42,16 @@ var (
 	ErrChecksum        = errors.New("storage: checksum mismatch")
 	ErrUnsupported     = errors.New("storage: operation not supported")
 )
+
+// CksumChunkSize is the fixed chunk size for checksum computation (1 MiB).
+const CksumChunkSize = 1 << 20
+
+// HashResult holds the output of a checksum computation.
+// WholeFileHash is the cumulative hash at EOF = MD5(file_content), hex-encoded.
+// ChunkHashes are per-CksumChunkSize chunk hashes, hex-encoded.
+type HashResult struct {
+	WholeFileHash string
+	ChunkHashes   []string
+	Algo          string
+	Err           error
+}

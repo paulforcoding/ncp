@@ -2,27 +2,32 @@ package ncpserver
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/zp001/ncp/internal/protocol"
+	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/model"
 )
 
 // ConnHandler handles all protocol messages on a single server connection.
 type ConnHandler struct {
-	server     *Server
-	basePath   string
-	mode       uint8
-	taskID     string
-	walker     *taskWalker // Source mode only; references server.walker
-	fdWriteMap map[uint32]*openWriteFile
-	fdReadMap  map[uint32]*os.File
-	nextFD     uint32
+	server         *Server
+	basePath       string
+	mode           uint8
+	taskID         string
+	walker         *taskWalker // Source mode only; references server.walker
+	fdWriteMap     map[uint32]*openWriteFile
+	fdReadMap      map[uint32]*os.File
+	fdChecksumMap  map[uint32]*openChecksumFile
+	nextFD         uint32
 }
 
 // protoFlagsToOS converts protocol-level ProtoO_* flags to OS-specific os.O_* flags.
@@ -82,12 +87,20 @@ type openWriteFile struct {
 	md5  hash.Hash
 }
 
+type openChecksumFile struct {
+	f        *os.File
+	hasher   hash.Hash // cumulative hash, never Reset
+	offset   int64
+	fileSize int64
+}
+
 // NewConnHandler creates a ConnHandler for the given server.
 func NewConnHandler(server *Server) *ConnHandler {
 	return &ConnHandler{
-		server:     server,
-		fdWriteMap: make(map[uint32]*openWriteFile),
-		fdReadMap:  make(map[uint32]*os.File),
+		server:        server,
+		fdWriteMap:    make(map[uint32]*openWriteFile),
+		fdReadMap:     make(map[uint32]*os.File),
+		fdChecksumMap: make(map[uint32]*openChecksumFile),
 	}
 }
 
@@ -98,9 +111,11 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 	// 1. Wait for MsgInit
 	frame, err := conn.Recv()
 	if err != nil {
+		slog.Info("handler: recv MsgInit failed", "err", err)
 		return err
 	}
 	if frame.Type != protocol.MsgInit {
+		slog.Info("handler: expected MsgInit", "got", fmt.Sprintf("0x%02X", frame.Type))
 		return fmt.Errorf("expected MsgInit, got 0x%02X", frame.Type)
 	}
 	initMsg := &protocol.InitMsg{}
@@ -109,26 +124,54 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		return err
 	}
 
-	// Reject old clients that don't send Mode and TaskID
+	slog.Info("handler: received MsgInit", "mode", initMsg.Mode, "taskID", initMsg.TaskID, "basePath", initMsg.BasePath, "configJSONLen", len(initMsg.ConfigJSON))
+
+	// Reject old clients that don't send Mode, TaskID, or ConfigJSON
 	if initMsg.Mode == 0 || initMsg.TaskID == "" {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send Mode and TaskID"))
 		return fmt.Errorf("old client rejected: missing Mode/TaskID")
+	}
+	if initMsg.ConfigJSON == "" {
+		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send ConfigJSON (protocol v4 required)"))
+		return fmt.Errorf("old client rejected: missing ConfigJSON")
 	}
 
 	// Server state machine validation
 	h.server.mu.Lock()
 	if h.server.mode == ServerModeUninitialized {
-		// First connection: create walker for Source, skip for SourceNoWalker, MkdirAll for Destination
-		if initMsg.Mode == protocol.ModeSource {
-			h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, h.server.tempDir)
-			h.server.walker.start()
-		} else if initMsg.Mode == protocol.ModeSourceNoWalker {
-			// SourceNoWalker: no walker needed
-		} else {
-			_ = os.MkdirAll(initMsg.BasePath, 0o755)
+		// First connection: parse ServerConfig from InitMsg
+		var serverCfg model.ServerConfig
+		if err := json.Unmarshal([]byte(initMsg.ConfigJSON), &serverCfg); err != nil {
+			h.server.mu.Unlock()
+			_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, fmt.Sprintf("invalid ConfigJSON: %v", err)))
+			return fmt.Errorf("invalid ConfigJSON: %w", err)
 		}
+		h.server.ApplyConfig(&serverCfg)
+
+		// Setup ProgramLog from client config
+		slog.Info("handler: about to SetupProgramLog", "output", serverCfg.ProgramLogOutput, "level", serverCfg.ProgramLogLevel)
+		if err := filelog.SetupProgramLog(serverCfg.ProgramLogOutput, serverCfg.ProgramLogLevel); err != nil {
+			slog.Warn("failed to setup program log from client config", "error", err)
+		} else {
+			slog.Info("handler: SetupProgramLog succeeded")
+		}
+
+		slog.Info("handler: first connection, server configured", "mode", initMsg.Mode, "taskID", initMsg.TaskID, "basePath", initMsg.BasePath)
+
+		// Create walker for Source mode
+		if initMsg.Mode == protocol.ModeSource {
+			progressDir := serverCfg.ProgressStorePath
+				if progressDir == "" {
+					progressDir = "/tmp/ncpserve"
+				}
+				h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, progressDir)
+			h.server.walker.start()
+		}
+		// Destination mode: no auto MkdirAll — directory creation is driven by client MsgMkdir messages
+
 		h.server.mode = initMsg.Mode
 		h.server.taskID = initMsg.TaskID
+		slog.Info("handler: first connection configured, about to Unlock")
 	} else {
 		if initMsg.Mode != h.server.mode {
 			h.server.mu.Unlock()
@@ -142,8 +185,10 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 				fmt.Sprintf("server serving task %q, restart to switch", h.server.taskID)))
 			return fmt.Errorf("taskID mismatch")
 		}
+		slog.Info("handler: reconnection accepted", "mode", initMsg.Mode, "taskID", initMsg.TaskID)
 	}
 	h.server.mu.Unlock()
+	slog.Info("handler: unlocked, preparing to send Ack")
 
 	h.basePath = initMsg.BasePath
 	h.mode = initMsg.Mode
@@ -152,20 +197,26 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		h.walker = h.server.walker
 	}
 
+	slog.Info("handler: sending MsgInit Ack")
 	_ = conn.Send(protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode())
+	slog.Info("handler: MsgInit acknowledged, entering message loop", "basePath", h.basePath, "mode", h.mode)
 
 	// 2. Message loop
+	msgCount := 0
 	for {
 		frame, err := conn.Recv()
 		if err != nil {
+			slog.Info("handler: message loop recv error", "msgCount", msgCount, "err", err)
 			return err
 		}
 
+		msgCount++
 		var respType uint8
 		var respPayload []byte
 
 		switch frame.Type {
 		case protocol.MsgTaskDone:
+			slog.Info("handler: MsgTaskDone received", "msgCount", msgCount)
 			respType = protocol.MsgAck
 			respPayload = (&protocol.AckMsg{ResultCode: 0}).Encode()
 			_ = conn.Send(respType, respPayload)
@@ -191,6 +242,7 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgAbortFile:
 			respType, respPayload = h.handleAbortFile(frame)
 		case protocol.MsgMkdir:
+			slog.Debug("handler: MsgMkdir", "msgCount", msgCount)
 			respType, respPayload = h.handleMkdir(frame)
 		case protocol.MsgSymlink:
 			respType, respPayload = h.handleSymlink(frame)
@@ -205,13 +257,22 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		case protocol.MsgPread:
 			respType, respPayload = h.handlePread(frame)
 		case protocol.MsgStat:
+			slog.Debug("handler: MsgStat", "msgCount", msgCount)
 			respType, respPayload = h.handleStat(frame)
+		case protocol.MsgChecksumOpen:
+			respType, respPayload = h.handleChecksumOpen(frame)
+		case protocol.MsgChecksumNext:
+			respType, respPayload = h.handleChecksumNext(frame)
+		case protocol.MsgChecksumClose:
+			respType, respPayload = h.handleChecksumClose(frame)
 		default:
+			slog.Info("handler: unknown message type", "type", fmt.Sprintf("0x%02X", frame.Type), "msgCount", msgCount)
 			respType = protocol.MsgError
 			respPayload = protocol.EncodeError(model.ErrProtocol, "unknown message type")
 		}
 
 		if err := conn.Send(respType, respPayload); err != nil {
+			slog.Info("handler: send response failed", "msgCount", msgCount, "err", err)
 			return err
 		}
 	}
@@ -550,6 +611,137 @@ func (h *ConnHandler) cleanup() {
 		f.Close()
 		delete(h.fdReadMap, fd)
 	}
+	for fd, cf := range h.fdChecksumMap {
+		cf.f.Close()
+		delete(h.fdChecksumMap, fd)
+	}
+}
+
+func hasherForProto(algo uint8) hash.Hash {
+	switch algo {
+	case protocol.ProtoCksumXXH64:
+		return xxhash.New()
+	default:
+		return md5.New()
+	}
+}
+
+func (h *ConnHandler) handleChecksumOpen(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumOpenMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	fullPath := h.fullPath(msg.Path)
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, err.Error())
+	}
+
+	fd := h.nextFD
+	h.nextFD++
+	hasher := hasherForProto(msg.Algo)
+	cf := &openChecksumFile{f: f, hasher: hasher, offset: 0, fileSize: info.Size()}
+	h.fdChecksumMap[fd] = cf
+
+	// Read first chunk
+	resultMsg, err := h.readChecksumChunk(fd, cf)
+	if err != nil {
+		cf.f.Close()
+		delete(h.fdChecksumMap, fd)
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
+	}
+
+	return protocol.MsgChecksumResult, resultMsg.Encode()
+}
+
+func (h *ConnHandler) handleChecksumNext(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumNextMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	cf, ok := h.fdChecksumMap[msg.FD]
+	if !ok {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, "bad fd")
+	}
+
+	resultMsg, err := h.readChecksumChunk(msg.FD, cf)
+	if err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileRead, err.Error())
+	}
+
+	return protocol.MsgChecksumResult, resultMsg.Encode()
+}
+
+func newChunkHasherLike(cf *openChecksumFile) hash.Hash {
+	switch cf.hasher.(type) {
+	case *xxhash.Digest:
+		return xxhash.New()
+	default:
+		return md5.New()
+	}
+}
+
+func (h *ConnHandler) readChecksumChunk(fd uint32, cf *openChecksumFile) (*protocol.ChecksumResultMsg, error) {
+	buf := make([]byte, protocol.CksumChunkSize)
+	n, readErr := cf.f.ReadAt(buf, cf.offset)
+
+	// Hard error with no data read
+	if readErr != nil && readErr != io.EOF && n == 0 {
+		return nil, readErr
+	}
+
+	var chunkHashBytes []byte
+	if n > 0 {
+		chunkHasher := newChunkHasherLike(cf)
+		chunkHasher.Write(buf[:n])
+		cf.hasher.Write(buf[:n])
+		chunkHashBytes = chunkHasher.Sum(nil)
+		cf.offset += int64(n)
+	} else {
+		// Empty file: hash of zero bytes
+		chunkHasher := newChunkHasherLike(cf)
+		chunkHashBytes = chunkHasher.Sum(nil)
+	}
+
+	eof := uint8(0)
+	if readErr == io.EOF || cf.offset >= cf.fileSize {
+		eof = 1
+	}
+
+	cumHash := cf.hasher.Sum(nil) // snapshot cumulative hash (does not Reset)
+
+	return &protocol.ChecksumResultMsg{
+		FD:             fd,
+		ChunkHash:      chunkHashBytes,
+		CumulativeHash: cumHash,
+		BytesInChunk:   uint32(n),
+		EOF:            eof,
+	}, nil
+}
+
+func (h *ConnHandler) handleChecksumClose(frame *protocol.Frame) (uint8, []byte) {
+	msg := &protocol.ChecksumCloseMsg{}
+	if err := msg.Decode(frame.Payload); err != nil {
+		return protocol.MsgError, protocol.EncodeError(model.ErrProtocol, err.Error())
+	}
+
+	cf, ok := h.fdChecksumMap[msg.FD]
+	if !ok {
+		return protocol.MsgError, protocol.EncodeError(model.ErrFileOpen, "bad fd")
+	}
+
+	cf.f.Close()
+	delete(h.fdChecksumMap, msg.FD)
+
+	return protocol.MsgAck, (&protocol.AckMsg{ResultCode: 0}).Encode()
 }
 
 func equalChecksum(a, b []byte) bool {

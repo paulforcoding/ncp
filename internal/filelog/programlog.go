@@ -40,7 +40,15 @@ func SetupProgramLog(output, level string) error {
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Rename level to match PRD naming
 			if a.Key == slog.LevelKey {
-				level := a.Value.Any().(slog.Level)
+				var level slog.Level
+					switch v := a.Value.Any().(type) {
+					case slog.Level:
+						level = v
+					case string:
+						level = parseLevel(v)
+					default:
+						return a
+					}
 				switch {
 				case level >= LevelCritical:
 					a.Value = slog.StringValue("critical")

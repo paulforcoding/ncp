@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zp001/ncp/pkg/interfaces/storage"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 // BasenamePrefixedSource wraps one or more storage.Source instances,
@@ -116,6 +117,15 @@ func (ms *BasenamePrefixedSource) EndTask(ctx context.Context, summary storage.T
 		}
 	}
 	return firstErr
+}
+
+// ComputeHash routes to the correct source by matching the RelPath prefix.
+func (ms *BasenamePrefixedSource) ComputeHash(ctx context.Context, relPath string, algo model.CksumAlgorithm, chunkSize int64) (storage.HashResult, error) {
+	e, innerPath := ms.route(relPath)
+	if e == nil {
+		return storage.HashResult{}, fmt.Errorf("basename-prefixed source: no source for path %q", relPath)
+	}
+	return e.src.ComputeHash(ctx, innerPath, algo, chunkSize)
 }
 
 func (ms *BasenamePrefixedSource) route(relPath string) (*basenamePrefixedSourceEntry, string) {

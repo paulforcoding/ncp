@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 const (
@@ -22,7 +23,7 @@ const (
 // but rejects different taskIDs or modes.
 type Server struct {
 	listener    net.Listener
-	tempDir     string
+	cfg         *model.ServerConfig // parsed from first InitMsg
 	walker      *taskWalker
 	mu          sync.Mutex
 	mode        uint8
@@ -31,13 +32,29 @@ type Server struct {
 	quit        chan struct{}
 }
 
-// NewServer creates a Server bound to the given listener and temp directory.
-func NewServer(listener net.Listener, tempDir string) *Server {
+// NewServer creates a Server bound to the given listener.
+func NewServer(listener net.Listener) *Server {
 	return &Server{
 		listener: listener,
-		tempDir:  tempDir,
 		quit:     make(chan struct{}),
 	}
+}
+
+// ApplyConfig stores the ServerConfig received from the first client connection.
+// Caller must hold s.mu.
+func (s *Server) ApplyConfig(cfg *model.ServerConfig) {
+	s.cfg = cfg
+}
+
+// TempDir returns the directory for walker DB storage.
+// Uses ProgressStorePath from ServerConfig, or /tmp/ncpserve as default.
+func (s *Server) TempDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg != nil && s.cfg.ProgressStorePath != "" {
+		return s.cfg.ProgressStorePath
+	}
+	return "/tmp/ncpserve"
 }
 
 // Serve accepts connections and dispatches each to a ConnHandler.
@@ -58,7 +75,7 @@ func (s *Server) Serve() error {
 			}
 		}
 
-		atomic.AddInt64(&s.activeConns, 1)
+		slog.Info("accepted connection", "remote", netConn.RemoteAddr(), "activeConns", atomic.AddInt64(&s.activeConns, 1))
 		go func() {
 			defer atomic.AddInt64(&s.activeConns, -1)
 			conn := protocol.NewConn(netConn)
@@ -66,7 +83,9 @@ func (s *Server) Serve() error {
 
 			handler := NewConnHandler(s)
 			if err := handler.HandleConn(conn); err != nil {
-				slog.Debug("handler exited", "remote", conn.RemoteAddr(), "err", err)
+				slog.Info("handler exited", "remote", conn.RemoteAddr(), "err", err)
+			} else {
+				slog.Info("handler exited normally", "remote", conn.RemoteAddr())
 			}
 		}()
 	}

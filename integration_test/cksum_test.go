@@ -67,20 +67,20 @@ func runRemoteCksum(t *testing.T, srcDir, dstDir string) int {
 	t.Helper()
 	addr := startTestServer(t, filepath.Dir(srcDir))
 
-	src, err := remote.NewSource(addr, srcDir)
+	src, err := remote.NewSource(addr, srcDir, remote.WithConfigJSON("{}"))
 	if err != nil {
 		t.Fatalf("new src: %v", err)
 	}
-	dst, err := remote.NewSource(addr, dstDir)
+	dst, err := remote.NewSource(addr, dstDir, remote.WithConfigJSON("{}"))
 	if err != nil {
 		t.Fatalf("new dst: %v", err)
 	}
 
 	srcFactory := func(id int) (storage.Source, error) {
-		return remote.NewSource(addr, srcDir)
+		return remote.NewSource(addr, srcDir, remote.WithConfigJSON("{}"))
 	}
 	dstFactory := func(id int) (storage.Source, error) {
-		return remote.NewSource(addr, dstDir)
+		return remote.NewSource(addr, dstDir, remote.WithConfigJSON("{}"))
 	}
 
 	store := openTestStore(t)
@@ -123,15 +123,15 @@ func TestIntegration_RemoteCksum_NcpToNcp_Resume(t *testing.T) {
 
 	addr := startTestServer(t, filepath.Dir(srcDir))
 
-	src, _ := remote.NewSource(addr, srcDir)
-	dst, _ := remote.NewSource(addr, dstDir)
+	src, _ := remote.NewSource(addr, srcDir, remote.WithConfigJSON("{}"))
+	dst, _ := remote.NewSource(addr, dstDir, remote.WithConfigJSON("{}"))
 	store := openTestStore(t)
 
 	srcFactory := func(id int) (storage.Source, error) {
-		return remote.NewSource(addr, srcDir)
+		return remote.NewSource(addr, srcDir, remote.WithConfigJSON("{}"))
 	}
 	dstFactory := func(id int) (storage.Source, error) {
-		return remote.NewSource(addr, dstDir)
+		return remote.NewSource(addr, dstDir, remote.WithConfigJSON("{}"))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -3,7 +3,10 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -128,6 +131,49 @@ func newOSSDestination(t *testing.T, env ossEnv, prefix string) *aliyun.Destinat
 		t.Fatalf("aliyun.NewDestination: %v", err)
 	}
 	return dst
+}
+
+// newOSSDestinationWithPartSize creates an ncp aliyun.Destination with custom PartSize.
+func newOSSDestinationWithPartSize(t *testing.T, env ossEnv, prefix string, partSize int64) *aliyun.Destination {
+	t.Helper()
+	dst, err := aliyun.NewDestination(aliyun.Config{
+		Endpoint: env.Endpoint,
+		Region:   env.Region,
+		AK:       env.AK,
+		SK:       env.SK,
+		Bucket:   env.Bucket,
+		Prefix:   prefix,
+		PartSize: partSize,
+	})
+	if err != nil {
+		t.Fatalf("aliyun.NewDestination: %v", err)
+	}
+	return dst
+}
+
+// ossObjectMetadata holds metadata read from a HeadObject call.
+type ossObjectMetadata struct {
+	ContentLength int64
+	Metadata      map[string]string
+}
+
+// headOSSObjectMetadata reads object metadata via HeadObject.
+func headOSSObjectMetadata(t *testing.T, env ossEnv, prefix, relPath string) ossObjectMetadata {
+	t.Helper()
+	client := newOSSClient(env)
+	ctx := context.Background()
+	key := prefix + relPath
+	head, err := client.HeadObject(ctx, &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(env.Bucket),
+		Key:    oss.Ptr(key),
+	})
+	if err != nil {
+		t.Fatalf("HeadObject %s: %v", key, err)
+	}
+	return ossObjectMetadata{
+		ContentLength: head.ContentLength,
+		Metadata:      head.Metadata,
+	}
 }
 
 // seedOSSPrefix uploads a map of relative paths to content under the given prefix.
@@ -269,6 +315,71 @@ func newFailAfterNOpenShared(src storage.Source, failAt int) *failAfterNOpenShar
 		mu:     &sync.Mutex{},
 		count:  new(int),
 		failAt: failAt,
+	}
+}
+
+// uploadOSSMultipartNoNcpMD5 uploads a multipart object via raw SDK without ncp-md5 metadata.
+// This is used to test the ErrChecksum → CksumMismatch mapping for non-ncp-uploaded multipart objects.
+func uploadOSSMultipartNoNcpMD5(t *testing.T, env ossEnv, prefix, relPath string, content []byte, partSize int64) {
+	t.Helper()
+	client := newOSSClient(env)
+	ctx := context.Background()
+	key := prefix + relPath
+
+	initResult, err := client.InitiateMultipartUpload(ctx, &oss.InitiateMultipartUploadRequest{
+		Bucket: oss.Ptr(env.Bucket),
+		Key:    oss.Ptr(key),
+	})
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload %s: %v", key, err)
+	}
+	uploadID := oss.ToString(initResult.UploadId)
+
+	var parts []oss.UploadPart
+	partNum := int32(0)
+	for offset := int64(0); offset < int64(len(content)); {
+		end := offset + partSize
+		if end > int64(len(content)) {
+			end = int64(len(content))
+		}
+		data := content[offset:end]
+		partNum++
+		partMD5 := md5.Sum(data)
+
+		result, err := client.UploadPart(ctx, &oss.UploadPartRequest{
+			Bucket:        oss.Ptr(env.Bucket),
+			Key:           oss.Ptr(key),
+			UploadId:      oss.Ptr(uploadID),
+			PartNumber:    partNum,
+			Body:          bytes.NewReader(data),
+			ContentLength: oss.Ptr(int64(len(data))),
+			ContentMD5:    oss.Ptr(base64.StdEncoding.EncodeToString(partMD5[:])),
+		})
+		if err != nil {
+			_, _ = client.AbortMultipartUpload(ctx, &oss.AbortMultipartUploadRequest{
+				Bucket:   oss.Ptr(env.Bucket),
+				Key:      oss.Ptr(key),
+				UploadId: oss.Ptr(uploadID),
+			})
+			t.Fatalf("UploadPart %d: %v", partNum, err)
+		}
+		parts = append(parts, oss.UploadPart{
+			PartNumber: partNum,
+			ETag:       result.ETag,
+		})
+		offset = end
+	}
+
+	_, err = client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
+		Bucket:   oss.Ptr(env.Bucket),
+		Key:      oss.Ptr(key),
+		UploadId: oss.Ptr(uploadID),
+		CompleteMultipartUpload: &oss.CompleteMultipartUpload{
+			Parts: parts,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload %s: %v", key, err)
 	}
 }
 

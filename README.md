@@ -1,18 +1,30 @@
 # ncp
 
-Agent-First file copy tool for massive-scale data migration with DB-backed resume.
+ncp is a massive-scale file copy tool with DB-backed resume, designed for AI agents.
 
-ncp copies files to remote servers and cloud object storage with DB-backed progress tracking, structured Agent-First output, and precise resume capabilities.
 
-## Features
 
-- **Massive-scale copy** — Tested with 10M+ files. Pipeline architecture (Walker → Replicator → DBWriter) keeps memory flat.
-- **DB-backed progress** — Every file's copy/checksum status is persisted to PebbleDB. Interrupt at any time; resume picks up exactly where you left off.
-- **High performance** — DB-tracked resume with minimal overhead; batched writes and delayed flush to avoid impacting copy throughput.
-- **Unique workflow** — Supports both copy-then-verify and verify-then-incremental-copy patterns, enabling efficient data synchronization.
-- **Agent-First output** — Structured NDJSON FileLog events (`file_complete`, `file_metadata_complete`, `progress_summary`) designed for programmatic consumption by agents and scripts.
-- **Multiple backends** — Local filesystem, remote ncp server (`ncp://`), Alibaba Cloud OSS (`oss://`), Tencent Cloud COS (`cos://`), Huawei Cloud OBS (`obs://`).
-- **Checksum verification** — Independent `ncp cksum` command with MD5 or xxHash algorithms. Supports copy→cksum→copy cycles.
+## What Problems Does ncp Solve
+
+ncp addresses the pain of copying and migrating massive numbers of files and objects (OSS) in enterprise environments. It tackles this from three angles:
+
+### 1. DB-tracked copy progress
+
+1. Traversing tens of millions of files/objects is a heavy IO burden on both FS and OSS. ncp records discovered files in a DB so that traversal happens **only once** per copy task.
+2. Per-file copy status is persisted in the DB. At million-file scale, interruptions are routine — but with DB-backed progress, resume becomes trivial. A traditional massive migration turns into a step-by-step process you can complete over multiple sessions.
+3. Performance is preserved. ncp uses a write-fast, read-slow local KV store. If the copy task is never interrupted, the DB is write-only — minimizing overhead. ncp also uses parallelism, tiered IO sizes, and optional DirectIO to accelerate copying.
+
+### 2. AI-agent-friendly, enabling unattended copy tasks
+
+1. Massive data migrations often take hours to days. Operations staff cannot monitor copy status in real time — the best approach is to let an AI agent monitor progress and report to humans only when problems arise. ncp emits structured NDJSON FileLog events (`file_complete`, `file_metadata_complete`, `progress_summary`), designed for programmatic consumption by agents and scripts.
+2. Companion skills give agents working knowledge of ncp.
+
+### 3. Verifiable data
+
+The biggest concern in massive data migration is whether data is copied completely. ncp ensures data integrity in two ways:
+
+1. For cross-server copy, md5 comparison is used by default.
+2. ncp defines a source-path + destination-path pair as a **task**. A task can have multiple **runs**, each choosing either a `copy` or `cksum` action. So a task can copy-then-verify, or verify-then-copy — ultimately reaching 100% completion for both copy and verification.
 
 ## Notes
 - Only regular files, directories, and symbolic links are supported. Pipes, sockets, device files, and other special file types are skipped.

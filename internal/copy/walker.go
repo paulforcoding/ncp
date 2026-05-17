@@ -70,7 +70,9 @@ func (w *Walker) Stats() WalkerStats {
 // Run traverses the source, writes progress, and pushes to discoverCh.
 func (w *Walker) Run(ctx context.Context, discoverCh chan<- storage.DiscoverItem) error {
 	defer func() {
-		w.dispatchRemaining(ctx, discoverCh)
+		if ctx.Err() == nil {
+			w.dispatchRemaining(ctx, discoverCh)
+		}
 		close(discoverCh)
 	}()
 

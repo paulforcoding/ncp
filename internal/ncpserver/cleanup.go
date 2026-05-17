@@ -6,7 +6,7 @@ import (
 )
 
 // CleanupTempDir removes stale walker DB directories from previous server runs.
-// Call this once at server startup before accepting connections.
+// Uses the provided tempDir path (sourced from ServerConfig.ProgressStorePath).
 func CleanupTempDir(tempDir string) error {
 	entries, err := os.ReadDir(tempDir)
 	if err != nil {
