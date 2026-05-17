@@ -56,13 +56,13 @@ ncp copy <src> ncp://192.168.1.188:9900/<dst> \
 
 步骤三：从 FileLog 中收到 `progress_summary` 的 `finished=true` 信号，告知用户复制完成，展示复制任务总结报告，询问用户是否继续做 `ncp cksum` 检查完整性。
 
-步骤四（可选）：再次在远程启动 serve（copy 完成后 serve 已退出），然后本地执行 cksum：
+步骤四（可选）：再次在远程启动 serve（copy 完成后 serve 已退出），然后基于已有 task 执行 cksum：
 ```bash
-ncp cksum <src> ncp://192.168.1.188:9900/<dst> \
+ncp cksum --task <taskId> --no-skip-by-mtime \
   --FileLogOutput /tmp/ncp_file.log --FileLogInterval 10 \
   --ProgramLogOutput /tmp/ncp_program.log --ProgramLogLevel warn
 ```
-执行后立即监控三条 log 通道。
+`--task` 模式从已有 task 的 meta.json 读取 src/dst，不需要再传路径参数。**必须加 `--no-skip-by-mtime`**，否则 mtime+size 匹配会导致 cksum 瞬间全部跳过，无法真正校验数据完整性。执行后立即监控三条 log 通道。
 
 步骤五（可选）：从 FileLog 中收到 cksum 完成信号，告知用户 cksum 完成，展示 cksum 总结报告。检查 FileLog 中是否有 `result: "mismatch"` 的文件，有的话告知用户。
 
@@ -80,13 +80,13 @@ ncp cksum <src> ncp://192.168.1.188:9900/<dst> \
 
 步骤三：从 FileLog 中收到 cksum 完成信号，告知用户 cksum 结果：本地多少个文件、目的端多少个文件、有多少个文件 mismatch（需要复制）。
 
-步骤四：再次在远程启动 serve（cksum 完成后 serve 已退出），本地执行 copy：
+步骤四：再次在远程启动 serve（cksum 完成后 serve 已退出），基于已有 task 执行 copy：
 ```bash
-ncp copy <src> ncp://192.168.1.188:9900/<dst> \
+ncp copy --task <taskId> \
   --FileLogOutput /tmp/ncp_file.log --FileLogInterval 10 \
   --ProgramLogOutput /tmp/ncp_program.log --ProgramLogLevel warn
 ```
-ncp 的 `--skip-by-mtime`（默认开启）会跳过已一致文件，只复制 mismatch 的文件。执行后立即监控三条 log 通道。
+`--task` 模式从已有 task 的 meta.json 读取 src/dst，不需要再传路径参数。ncp 会跳过 CksumStatus=pass 的文件，只复制 mismatch 的文件。执行后立即监控三条 log 通道。
 
 步骤五：从 FileLog 中收到 copy 完成信号，告知用户复制完成，展示总结报告，询问是否再做一次 cksum 确认完整性。
 

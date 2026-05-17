@@ -149,9 +149,27 @@ ncp 面向外部的结构化输出，通过 `--FileLogOutput` 和 `--FileLogInte
 ```
 
 - `finished=true` 时为最终汇总，`exitCode` 0 = 成功，2 = 有错误/不匹配
-- `walker.discoveredCount` = 文件总数（遍历完成后此值为总数）
-- `replicator.filesCopied` / `bytesCopied` = 已复制的文件数/字节数
-- `dbWriter.totalFailed` > 0 表示有失败文件
+
+**progress_summary 的三个子对象对应 ncp 的核心流水线：**
+
+```
+Walker(1) ──discoverCh──→ Replicator(N) ──resultCh──→ DBWriter(1)
+```
+
+| 阶段 | 说明 | 对应 progress_summary 字段 |
+|------|------|---------------------------|
+| **Walker** | 遍历源目录，将发现的文件写入 PebbleDB（状态=discovered），推送到 discoverCh | `walker.*` |
+| **Replicator** | N 个并行 worker，从 discoverCh 读取文件，执行复制或校验，将结果推送到 resultCh | `replicator.*` |
+| **DBWriter** | 单 goroutine，批量接收结果，更新 PebbleDB 状态，定期 flush | `dbWriter.*` |
+
+**理解进度数字：**
+- `walker.discoveredCount` = Walker 已发现的文件总数（遍历完成后此值 = 全部文件数）
+- `walker.dispatchedCount` = 已推送到 discoverCh 的文件数
+- `walker.walkComplete` = Walker 是否遍历完毕。**这是关键事件**：当 walkComplete 变为 true 时，意味着 ncp 已将所有文件信息写入 DB，后续 resume 将完整跳过遍历阶段直接从 DB replay；否则 resume 还要重新遍历一次（代价极高）。因此每当 walkComplete 从 false 变为 true，必须主动向人类用户报告
+- `replicator.filesCopied` / `bytesCopied` = Replicator 已完成复制/校验的文件数/字节数
+- `dbWriter.totalDone` = DBWriter 已确认完成的文件数（这是最终的有效计数）
+- `dbWriter.totalFailed` > 0 = 有失败文件
+- `dbWriter.totalProcessed` = DBWriter 已处理的总数（= totalDone + totalFailed）
 
 ### 监控方案
 
