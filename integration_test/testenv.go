@@ -32,8 +32,7 @@ func startTestServer(t *testing.T, basePath string) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	tempDir := t.TempDir()
-	srv := ncpserver.NewServer(ln, tempDir)
+	srv := ncpserver.NewServer(ln)
 	go srv.Serve()
 	t.Cleanup(func() {
 		srv.Shutdown()

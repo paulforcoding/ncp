@@ -106,7 +106,7 @@ func (d *Destination) key(relPath string) string {
 func buildMetaHeader(meta map[string]string) *http.Header {
 	h := make(http.Header)
 	for k, v := range meta {
-		h.Set(k, v)
+		h.Set("x-cos-meta-"+k, v)
 	}
 	return &h
 }

@@ -160,7 +160,11 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 
 		// Create walker for Source mode
 		if initMsg.Mode == protocol.ModeSource {
-			h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, h.server.TempDir())
+			progressDir := serverCfg.ProgressStorePath
+				if progressDir == "" {
+					progressDir = "/tmp/ncpserve"
+				}
+				h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, progressDir)
 			h.server.walker.start()
 		}
 		// Destination mode: no auto MkdirAll — directory creation is driven by client MsgMkdir messages

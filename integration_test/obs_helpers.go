@@ -3,6 +3,9 @@
 package integration
 
 import (
+	"bytes"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -141,6 +144,48 @@ func newOBSDestination(t *testing.T, env obsEnv, prefix string) *obsbackend.Dest
 	return dst
 }
 
+// newOBSDestinationWithPartSize creates an ncp obs.Destination with custom PartSize.
+func newOBSDestinationWithPartSize(t *testing.T, env obsEnv, prefix string, partSize int64) *obsbackend.Destination {
+	t.Helper()
+	dst, err := obsbackend.NewDestination(obsbackend.Config{
+		Endpoint: env.Endpoint,
+		Region:   env.Region,
+		AK:       env.AK,
+		SK:       env.SK,
+		Bucket:   env.Bucket,
+		Prefix:   prefix,
+		PartSize: partSize,
+	})
+	if err != nil {
+		t.Fatalf("obs.NewDestination: %v", err)
+	}
+	return dst
+}
+
+// obsObjectMetadata holds metadata read from a GetObjectMetadata call.
+type obsObjectMetadata struct {
+	ContentLength int64
+	Metadata      map[string]string
+}
+
+// headOBSObjectMetadata reads object metadata via GetObjectMetadata.
+func headOBSObjectMetadata(t *testing.T, env obsEnv, prefix, relPath string) obsObjectMetadata {
+	t.Helper()
+	client := newOBSClientHelper(t, env)
+	key := prefix + relPath
+	out, err := client.GetObjectMetadata(&obs.GetObjectMetadataInput{
+		Bucket: env.Bucket,
+		Key:    key,
+	})
+	if err != nil {
+		t.Fatalf("GetObjectMetadata %s: %v", key, err)
+	}
+	return obsObjectMetadata{
+		ContentLength: out.ContentLength,
+		Metadata:      out.Metadata,
+	}
+}
+
 // seedOBSPrefix uploads a map of relative paths to content under the given prefix.
 // Also creates directory marker objects and POSIX metadata for cksum/copy tests.
 func seedOBSPrefix(t *testing.T, env obsEnv, prefix string, files map[string]string) {
@@ -234,6 +279,69 @@ func putOBSObject(t *testing.T, env obsEnv, prefix, relPath, content string) {
 	})
 	if err != nil {
 		t.Fatalf("PutObject %s: %v", key, err)
+	}
+}
+
+// uploadOBSMultipartNoNcpMD5 uploads a multipart object via raw SDK without ncp-md5 metadata.
+func uploadOBSMultipartNoNcpMD5(t *testing.T, env obsEnv, prefix, relPath string, content []byte, partSize int64) {
+	t.Helper()
+	client := newOBSClientHelper(t, env)
+	key := prefix + relPath
+
+	initOut, err := client.InitiateMultipartUpload(&obs.InitiateMultipartUploadInput{
+		ObjectOperationInput: obs.ObjectOperationInput{
+			Bucket: env.Bucket,
+			Key:    key,
+		},
+	})
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload %s: %v", key, err)
+	}
+	uploadID := initOut.UploadId
+
+	var parts []obs.Part
+	partNum := 0
+	for offset := int64(0); offset < int64(len(content)); {
+		end := offset + partSize
+		if end > int64(len(content)) {
+			end = int64(len(content))
+		}
+		data := content[offset:end]
+		partNum++
+		partMD5 := md5.Sum(data)
+
+		out, err := client.UploadPart(&obs.UploadPartInput{
+			Bucket:     env.Bucket,
+			Key:        key,
+			UploadId:   uploadID,
+			PartNumber: partNum,
+			ContentMD5: base64.StdEncoding.EncodeToString(partMD5[:]),
+			Body:       bytes.NewReader(data),
+			PartSize:   int64(len(data)),
+		})
+		if err != nil {
+			_, _ = client.AbortMultipartUpload(&obs.AbortMultipartUploadInput{
+				Bucket:   env.Bucket,
+				Key:      key,
+				UploadId: uploadID,
+			})
+			t.Fatalf("UploadPart %d: %v", partNum, err)
+		}
+		parts = append(parts, obs.Part{
+			PartNumber: partNum,
+			ETag:       out.ETag,
+		})
+		offset = end
+	}
+
+	_, err = client.CompleteMultipartUpload(&obs.CompleteMultipartUploadInput{
+		Bucket:   env.Bucket,
+		Key:      key,
+		UploadId: uploadID,
+		Parts:    parts,
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload %s: %v", key, err)
 	}
 }
 
