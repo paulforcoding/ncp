@@ -44,7 +44,7 @@ func NewJob(src storage.Source, dst storage.Destination, store progress.Progress
 		src:            src,
 		dst:            dst,
 		store:          store,
-		parallelism:    1,
+		parallelism:    2,
 		channelBuf:     100000,
 		ensureDirMtime: true,
 		metrics:        &ThroughputMeter{},
@@ -186,6 +186,7 @@ func (j *Job) startReplicators(ctx context.Context, discoverCh <-chan storage.Di
 }
 
 func (j *Job) drainOnFatal(err error) {
+	slog.Error("fatal error", "error", err)
 	j.fatalErr.Store(err)
 	if j.cancel != nil {
 		j.cancel()

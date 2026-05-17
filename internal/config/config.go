@@ -39,7 +39,7 @@ type Config struct {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		CopyParallelism:    1,
+		CopyParallelism:    2,
 		ProgramLogLevel:    "warning",
 		ProgramLogOutput:   "console",
 		FileLogEnabled:     true,

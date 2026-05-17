@@ -46,8 +46,8 @@ func TestCksumJobOptions(t *testing.T) {
 
 func TestCksumJobDefaults(t *testing.T) {
 	j := NewCksumJob(nil, nil, nil)
-	if j.parallelism != 1 {
-		t.Errorf("default parallelism = %d, want 1", j.parallelism)
+	if j.parallelism != 2 {
+		t.Errorf("default parallelism = %d, want 2", j.parallelism)
 	}
 	if j.cksumAlgo != model.DefaultCksumAlgorithm {
 		t.Errorf("default cksumAlgo = %v, want %v", j.cksumAlgo, model.DefaultCksumAlgorithm)

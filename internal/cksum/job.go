@@ -3,6 +3,7 @@ package cksum
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,7 +43,7 @@ func NewCksumJob(src, dst storage.Source, store progress.ProgressStore, opts ...
 		src:         src,
 		dst:         dst,
 		store:       store,
-		parallelism: 1,
+		parallelism: 2,
 		cksumAlgo:   model.DefaultCksumAlgorithm,
 		channelBuf:  100000,
 		metrics:     &copy.ThroughputMeter{},
@@ -183,6 +184,7 @@ func (j *CksumJob) startCksumWorkers(ctx context.Context, cksumCh <-chan storage
 }
 
 func (j *CksumJob) drainOnFatal(err error) {
+	slog.Error("fatal error", "error", err)
 	j.fatalErr.Store(err)
 	if j.cancel != nil {
 		j.cancel()

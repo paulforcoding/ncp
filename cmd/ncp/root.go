@@ -40,7 +40,7 @@ func main() {
 	}
 
 	// Config flags (all fields overridable via CLI)
-	copyCmd.Flags().Int("CopyParallelism", 1, "Number of parallel copy workers")
+	copyCmd.Flags().Int("CopyParallelism", 2, "Number of parallel copy workers")
 	copyCmd.Flags().String("ProgramLogLevel", "info", "Log level: trace/debug/info/warn/error/critical")
 	copyCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output: console or file path")
 	copyCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
@@ -86,7 +86,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runResume,
 	}
-	resumeCmd.Flags().Int("CopyParallelism", 1, "Number of parallel copy workers")
+	resumeCmd.Flags().Int("CopyParallelism", 2, "Number of parallel copy workers")
 	resumeCmd.Flags().String("ProgramLogLevel", "info", "Log level")
 	resumeCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output")
 	resumeCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
@@ -153,7 +153,7 @@ func main() {
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runCksum,
 	}
-	cksumCmd.Flags().Int("CopyParallelism", 1, "Number of parallel checksum workers")
+	cksumCmd.Flags().Int("CopyParallelism", 2, "Number of parallel checksum workers")
 	cksumCmd.Flags().String("ProgramLogLevel", "info", "Log level")
 	cksumCmd.Flags().String("ProgramLogOutput", "console", "ProgramLog output")
 	cksumCmd.Flags().Bool("enable-FileLog", true, "Enable FileLog output")
