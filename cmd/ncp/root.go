@@ -25,7 +25,7 @@ func main() {
 	copyCmd := &cobra.Command{
 		Use:   "copy <src>... <dst>",
 		Short: "Copy files from source to destination",
-		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Each source is placed under its basename as a subdirectory of dst. For example, 'ncp copy /data/dir /tmp/' creates /tmp/dir/... .\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
+		Long:  "Copy files from source to destination. Supports local→local, local→remote (ncp://), and local→cloud (oss://). Path semantics match cp: single source + dst doesn't exist → copy AS dst; single source + dst exists as directory → copy INTO dst; multiple sources + dst must exist as directory.\n\nObject storage URLs (oss://) require a <profile>@ prefix referring to a profile defined in ncp_config.json (key: Profiles). Example: oss://prod@bucket/path/.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			taskID, _ := cmd.Flags().GetString("task")
 			if taskID != "" {
@@ -143,7 +143,7 @@ func main() {
 		RunE:  runServe,
 	}
 	serveCmd.Flags().String("listen", ":9900", "Listen address (host:port)")
-	serveCmd.Flags().String("serve-temp-dir", "/tmp/ncpserve", "Temporary directory for walker DB")
+
 
 	// cksum command
 	cksumCmd := &cobra.Command{

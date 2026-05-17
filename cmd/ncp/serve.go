@@ -15,18 +15,13 @@ import (
 // runServe handles `ncp serve` — starts the ncp protocol server.
 func runServe(cmd *cobra.Command, args []string) error {
 	listenAddr, _ := cmd.Flags().GetString("listen")
-	tempDir, _ := cmd.Flags().GetString("serve-temp-dir")
-
-	if err := ncpserver.CleanupTempDir(tempDir); err != nil {
-		return fmt.Errorf("cleanup temp dir: %w", err)
-	}
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
 
-	srv := ncpserver.NewServer(listener, tempDir)
+	srv := ncpserver.NewServer(listener)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

@@ -288,7 +288,7 @@ func TestEncodeError(t *testing.T) {
 // --- New messages for ncp:// source ---
 
 func TestInitMsg_Roundtrip(t *testing.T) {
-	m := &InitMsg{BasePath: "/data/backup"}
+	m := &InitMsg{BasePath: "/data/backup", Mode: 1, TaskID: "task-001", ConfigJSON: `{"ProgramLogLevel":"info"}`}
 	data := m.Encode()
 
 	m2 := &InitMsg{}
@@ -298,10 +298,19 @@ func TestInitMsg_Roundtrip(t *testing.T) {
 	if m2.BasePath != m.BasePath {
 		t.Fatalf("basePath mismatch: got %q, want %q", m2.BasePath, m.BasePath)
 	}
+	if m2.Mode != m.Mode {
+		t.Fatalf("mode mismatch: got %d, want %d", m2.Mode, m.Mode)
+	}
+	if m2.TaskID != m.TaskID {
+		t.Fatalf("taskID mismatch: got %q, want %q", m2.TaskID, m.TaskID)
+	}
+	if m2.ConfigJSON != m.ConfigJSON {
+		t.Fatalf("configJSON mismatch: got %q, want %q", m2.ConfigJSON, m.ConfigJSON)
+	}
 }
 
-func TestInitMsg_EmptyBasePath(t *testing.T) {
-	m := &InitMsg{BasePath: ""}
+func TestInitMsg_EmptyFields(t *testing.T) {
+	m := &InitMsg{BasePath: "", ConfigJSON: ""}
 	data := m.Encode()
 
 	m2 := &InitMsg{}
@@ -310,6 +319,18 @@ func TestInitMsg_EmptyBasePath(t *testing.T) {
 	}
 	if m2.BasePath != "" {
 		t.Fatalf("expected empty basePath, got %q", m2.BasePath)
+	}
+	if m2.ConfigJSON != "" {
+		t.Fatalf("expected empty configJSON, got %q", m2.ConfigJSON)
+	}
+}
+
+func TestInitMsg_MissingConfigJSON(t *testing.T) {
+	// Protocol v3 data (no ConfigJSON field) should fail to decode
+	data := []byte{0, 5, 'h', 'e', 'l', 'l', 'o', 1, 0, 4, 't', 'e', 's', 't'} // BasePath="hello", Mode=1, TaskID="test"
+	m := &InitMsg{}
+	if err := m.Decode(data); err == nil {
+		t.Fatal("expected error for missing configJSON field")
 	}
 }
 

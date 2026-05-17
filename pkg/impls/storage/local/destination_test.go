@@ -193,3 +193,29 @@ func TestWriterCommitAfterAbortIsNoop(t *testing.T) {
 		t.Fatalf("commit after abort should be no-op: %v", err)
 	}
 }
+
+func TestDestinationExistsDir(t *testing.T) {
+	// Existing directory
+	dir := t.TempDir()
+	dst, err := NewDestination(dir)
+	if err != nil {
+		t.Fatalf("new destination: %v", err)
+	}
+	exists, err := dst.ExistsDir(context.Background())
+	if err != nil {
+		t.Fatalf("existsdir: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected ExistsDir=true for existing directory")
+	}
+
+	// Non-existent path
+	dst3 := &Destination{base: dir + "/no-such-dir", cfg: DefaultWriterConfig()}
+	exists2, err := dst3.ExistsDir(context.Background())
+	if err != nil {
+		t.Fatalf("existsdir: %v", err)
+	}
+	if exists2 {
+		t.Fatal("expected ExistsDir=false for non-existent path")
+	}
+}

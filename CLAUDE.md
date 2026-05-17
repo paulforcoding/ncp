@@ -1,6 +1,6 @@
 # ncp — Claude 项目指南
 
-> 对 AI Agent 友好、使用 DB 实现断点续传的海量文件复制工具。
+> 对 AI Agent 友好、使用 DB 实现断点续传的海量文件复制工具。ncp 是 `cp` 的多服务器扩展，目录和文件的行为必须与 `cp` 保持一致，偏离 `cp` 行为即为 bug。
 
 ## 1. 项目概览
 
@@ -131,12 +131,17 @@ integration_test/     # 集成测试（本地↔OSS↔远程 交叉测试）
 
 ### 2.5 Path Semantics
 
-**Copy:** `ncp copy` wraps all sources in `BasenamePrefixedSource`, so every source (single or multiple) is placed under its basename as a subdirectory of `dst`.
+**Copy:** `ncp copy` path semantics align with `cp`:
+
+- Single source + dst doesn't exist → copy AS dst (no basename prefix)
+- Single source + dst exists as directory → copy INTO dst (basename prefix)
+- Multiple sources + dst exists as directory → copy INTO dst (basename prefix)
+- Multiple sources + dst doesn't exist → error
 
 ```
-ncp copy /data/dir /tmp/           → /tmp/dir/...
-ncp copy a b /tmp/                 → /tmp/a/..., /tmp/b/...
-ncp copy oss://bucket/ /tmp/       → /tmp/bucket/...
+ncp copy /data/dir /tmp/newname     → /tmp/newname/...     (dst doesn't exist: AS dst)
+ncp copy /data/dir /tmp/existing    → /tmp/existing/dir/...  (dst exists: INTO dst)
+ncp copy a b /tmp/existing          → /tmp/existing/a/..., /tmp/existing/b/...
 ```
 
 **Cksum:** Both `src` and `dst` are explicit base paths. No automatic basename joining is performed.
@@ -166,6 +171,7 @@ type Destination interface {
     Mkdir(ctx, relPath, mode, uid, gid) error
     Symlink(ctx, relPath, target) error
     SetMetadata(ctx, relPath, FileMetadata) error
+    ExistsDir(ctx) (bool, error)
 }
 
 // Writer = pwrite 语义
@@ -212,8 +218,8 @@ MVP 阶段使用明文 TCP + 自研帧协议，仅适用于内网/VPN。
 | Magic  | Version | Type | Length | CRC32  |
 | 4 bytes| 1 byte  |1 byte| 4 bytes| 4 bytes|
 +--------+---------+------+--------+--------+
-Magic   = 0x4E435004 ("NCP" + version bump)
-Version = 2
+Magic   = 0x4E435006 ("NCP" + version bump)
+Version = 4
 Header  = 14 bytes
 MaxPayload = 16 MB
 ```
@@ -231,7 +237,7 @@ MaxPayload = 16 MB
 | 7 | Utime | C→S | 设置时间 |
 | 8 | Setxattr | C→S | 设置扩展属性 |
 | 9 | TaskDone | C→S | **task 完成信号**（触发 serve 退出） |
-| 10 | Init | C→S | 初始化连接（携带 Mode + TaskID + BasePath） |
+| 10 | Init | C→S | 初始化连接（携带 Mode + TaskID + BasePath + ConfigJSON） |
 | 11 | List | C→S | 请求目录列表（分页） |
 | 12 | Pread | C→S | 读取文件数据 |
 | 13 | Stat | C→S | 查询文件元数据 |
@@ -410,7 +416,7 @@ make lint           # golangci-lint
 1. **OSS 必须用 profile 引用**:`oss://<profile>@bucket/path/`。profile 集中定义在 `ncp_config.json` 的 `Profiles` 下,`Profiles.<name>.Provider` 必须等于 URL scheme。`--cksum-algorithm` 必须为 `md5`(OSS 用 Content-MD5 校验,不支持 `xxh64`)。
 2. **ncp:// 可作源或目标**：`ncp://` 既可以作为 copy/cksum 的 source，也可以作为 destination。
 3. **多源限制**：多个本地源可以同时复制，但不能混用 `oss://` 或 `ncp://` 作为多源之一。
-4. **copy vs cksum 路径语义不同**：`ncp copy /data/dir /tmp/` 产生 `/tmp/dir/...`（自动加 basename），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
+4. **copy vs cksum 路径语义不同**：`ncp copy` 路径语义对齐 `cp`（dst 不存在时复制 AS dst，dst 存在时复制 INTO dst），而 `ncp cksum /data/dir /tmp/dir` 直接比对两端（无自动 join）。
 5. **DirectIO 与 SyncWrites 互斥**：同时启用会在配置验证时报错。
 5. **Resume 时 channelBuf 不可变**：resume 依赖 DB replay，channel buffer 大小在首次运行时固定。
 6. **任务并发锁**：同一 taskID 不允许并发运行，通过文件锁保护（`task/lock_unix.go`）。

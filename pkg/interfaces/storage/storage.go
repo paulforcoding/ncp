@@ -67,4 +67,5 @@ type Destination interface {
 	Mkdir(ctx context.Context, relPath string, mode os.FileMode, uid, gid int) error
 	Symlink(ctx context.Context, relPath string, target string) error
 	SetMetadata(ctx context.Context, relPath string, attr FileAttr) error
+	ExistsDir(ctx context.Context) (bool, error)
 }

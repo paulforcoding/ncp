@@ -491,15 +491,17 @@ const (
 
 // InitMsg is the payload for MsgInit — sent by client after connection.
 type InitMsg struct {
-	BasePath string
-	Mode     uint8
-	TaskID   string
+	BasePath   string
+	Mode       uint8
+	TaskID     string
+	ConfigJSON string // ServerConfig JSON, mandatory in protocol v4
 }
 
 func (m *InitMsg) Encode() []byte {
 	pathBytes := []byte(m.BasePath)
 	taskIDBytes := []byte(m.TaskID)
-	n := 2 + len(pathBytes) + 1 + 2 + len(taskIDBytes)
+	cfgBytes := []byte(m.ConfigJSON)
+	n := 2 + len(pathBytes) + 1 + 2 + len(taskIDBytes) + 2 + len(cfgBytes)
 	b := make([]byte, n)
 	off := 0
 	binary.BigEndian.PutUint16(b[off:], uint16(len(pathBytes)))
@@ -511,6 +513,10 @@ func (m *InitMsg) Encode() []byte {
 	binary.BigEndian.PutUint16(b[off:], uint16(len(taskIDBytes)))
 	off += 2
 	copy(b[off:], taskIDBytes)
+	off += len(taskIDBytes)
+	binary.BigEndian.PutUint16(b[off:], uint16(len(cfgBytes)))
+	off += 2
+	copy(b[off:], cfgBytes)
 	return b
 }
 
@@ -518,20 +524,32 @@ func (m *InitMsg) Decode(data []byte) error {
 	if len(data) < 2 {
 		return fmt.Errorf("init msg too short")
 	}
-	pathLen := int(binary.BigEndian.Uint16(data[0:]))
-	if len(data) < 2+pathLen+1+2 {
+	off := 0
+	pathLen := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if len(data) < off+pathLen+1+2 {
 		return fmt.Errorf("init msg missing mode/taskID fields")
 	}
-	m.BasePath = string(data[2 : 2+pathLen])
-	off := 2 + pathLen
+	m.BasePath = string(data[off : off+pathLen])
+	off += pathLen
 	m.Mode = data[off]
 	off += 1
 	taskIDLen := int(binary.BigEndian.Uint16(data[off:]))
 	off += 2
 	if len(data) < off+taskIDLen {
-		return fmt.Errorf("init msg truncated")
+		return fmt.Errorf("init msg truncated taskID")
 	}
 	m.TaskID = string(data[off : off+taskIDLen])
+	off += taskIDLen
+	if len(data) < off+2 {
+		return fmt.Errorf("init msg missing configJSON field (protocol v4 required)")
+	}
+	cfgLen := int(binary.BigEndian.Uint16(data[off:]))
+	off += 2
+	if len(data) < off+cfgLen {
+		return fmt.Errorf("init msg truncated configJSON")
+	}
+	m.ConfigJSON = string(data[off : off+cfgLen])
 	return nil
 }
 

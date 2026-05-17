@@ -105,7 +105,8 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	srcMode := resolveRemoteSourceMode(store)
 
 	// Dependency injection
-	src, dst, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, srcMode, srcMode)
+	configJSON := buildConfigJSON(cfg)
+	src, dst, extraOpts, err := setupCksumDeps(cfg, srcPath, dstPath, srcMode, srcMode, configJSON)
 	if err != nil {
 		return err
 	}
@@ -136,7 +137,7 @@ func runCksum(cmd *cobra.Command, args []string) error {
 	}
 
 	// Notify remote serve to exit
-	_ = notifyRemoteTaskDone(srcPath, dstPath, taskID, srcMode)
+	_ = notifyRemoteTaskDone(srcPath, dstPath, taskID, srcMode, configJSON)
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -185,13 +186,14 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 
 	srcMode := resolveRemoteSourceMode(store)
 
+	configJSON := buildConfigJSON(cfg)
 	var src storage.Source
 	var dst storage.Source
 	var extraOpts []cksum.CksumJobOption
-	if firstRunJobType(meta) == task.JobTypeCopy {
-		src, dst, extraOpts, err = setupCksumDepsFromCopy(cfg, meta, srcMode)
+	if meta.BasenamePrefix {
+		src, dst, extraOpts, err = setupCksumDepsFromCopy(cfg, meta, srcMode, configJSON)
 	} else {
-		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode)
+		src, dst, extraOpts, err = setupCksumDeps(cfg, meta.SrcBase, meta.DstBase, srcMode, srcMode, configJSON)
 	}
 	if err != nil {
 		return err
@@ -224,7 +226,7 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 	}
 
 	// Notify remote serve to exit
-	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode)
+	_ = notifyRemoteTaskDone(meta.SrcBase, meta.DstBase, taskID, srcMode, configJSON)
 
 	_ = task.UpdateRunFinished(meta, exitCode, progressDir)
 
@@ -238,10 +240,10 @@ func runCksumResume(cmd *cobra.Command, cfg *config.Config, taskID string) error
 // setupCksumDeps creates src Source, dst Source, and cksum options.
 // Both src and dst are Sources (readable) for checksum comparison.
 // srcMode and dstMode are the protocol modes for remote sources.
-func setupCksumDeps(cfg *config.Config, srcPath, dstPath string, srcMode, dstMode uint8) (storage.Source, storage.Source, []cksum.CksumJobOption, error) {
+func setupCksumDeps(cfg *config.Config, srcPath, dstPath string, srcMode, dstMode uint8, configJSON string) (storage.Source, storage.Source, []cksum.CksumJobOption, error) {
 	var extraOpts []cksum.CksumJobOption
 
-	src, err := di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
+	src, err := di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode, configJSON)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create source: %w", err)
 	}
@@ -249,12 +251,12 @@ func setupCksumDeps(cfg *config.Config, srcPath, dstPath string, srcMode, dstMod
 	su, _ := di.ParsePath(srcPath)
 	if su.Scheme == "ncp" {
 		srcFactory := func(id int) (storage.Source, error) {
-			return di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode)
+			return di.NewSourceWithRemoteMode(srcPath, cfg.Profiles, srcMode, configJSON)
 		}
 		extraOpts = append(extraOpts, cksum.WithCksumSrcFactory(srcFactory))
 	}
 
-	dst, err := di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode)
+	dst, err := di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode, configJSON)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create destination source: %w", err)
 	}
@@ -262,7 +264,7 @@ func setupCksumDeps(cfg *config.Config, srcPath, dstPath string, srcMode, dstMod
 	du, _ := di.ParsePath(dstPath)
 	if du.Scheme == "ncp" {
 		dstFactory := func(id int) (storage.Source, error) {
-			return di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode)
+			return di.NewSourceWithRemoteMode(dstPath, cfg.Profiles, dstMode, configJSON)
 		}
 		extraOpts = append(extraOpts, cksum.WithCksumDstFactory(dstFactory))
 	}

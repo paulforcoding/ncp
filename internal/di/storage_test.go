@@ -166,7 +166,7 @@ func TestParseCOSURL(t *testing.T) {
 
 func TestNewSourceWithRemoteMode_NCP(t *testing.T) {
 	// ncp:// URLs should create remote.Source with the given mode.
-	src, err := NewSourceWithRemoteMode("ncp://host:9900/data", nil, 3) // ModeSourceNoWalker
+	src, err := NewSourceWithRemoteMode("ncp://host:9900/data", nil, 3, "") // ModeSourceNoWalker
 	if err != nil {
 		t.Fatalf("NewSourceWithRemoteMode: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestNewSourceWithRemoteMode_NCP(t *testing.T) {
 
 func TestNewSourceWithRemoteMode_NonNCP(t *testing.T) {
 	// Non-ncp URLs should fall through to NewSource.
-	src, err := NewSourceWithRemoteMode(t.TempDir(), nil, 3)
+	src, err := NewSourceWithRemoteMode(t.TempDir(), nil, 3, "")
 	if err != nil {
 		t.Fatalf("NewSourceWithRemoteMode: %v", err)
 	}

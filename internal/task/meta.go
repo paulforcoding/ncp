@@ -34,14 +34,15 @@ type RunRecord struct {
 }
 
 type Meta struct {
-	TaskID    string      `json:"taskId"`
-	SrcBase   string      `json:"srcBase"`
-	DstBase   string      `json:"dstBase"`
-	CreatedAt time.Time   `json:"createdAt"`
-	CmdArgs   []string    `json:"cmdArgs"`
-	PID       int         `json:"pid"`
-	Hostname  string      `json:"hostname"`
-	Runs      []RunRecord `json:"runs"`
+	TaskID         string      `json:"taskId"`
+	SrcBase        string      `json:"srcBase"`
+	DstBase        string      `json:"dstBase"`
+	BasenamePrefix bool        `json:"basenamePrefix"`
+	CreatedAt      time.Time   `json:"createdAt"`
+	CmdArgs        []string    `json:"cmdArgs"`
+	PID            int         `json:"pid"`
+	Hostname       string      `json:"hostname"`
+	Runs           []RunRecord `json:"runs"`
 }
 
 // GenerateTaskID creates a unique task ID: task-{timestamp}-{4hex}.

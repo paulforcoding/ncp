@@ -21,12 +21,18 @@ func WithMode(mode uint8) SourceOption {
 	return func(s *Source) { s.mode = mode }
 }
 
+// WithConfigJSON sets the ServerConfig JSON for InitMsg.
+func WithConfigJSON(configJSON string) SourceOption {
+	return func(s *Source) { s.configJSON = configJSON }
+}
+
 // Source implements storage.Source for remote ncp servers.
 type Source struct {
-	addr     string         // server address (host:port)
-	basePath string         // URL path (e.g. "/data/backup")
-	conn     *protocol.Conn // instance-level single connection
-	mode     uint8          // ModeSource or ModeSourceNoWalker
+	addr       string         // server address (host:port)
+	basePath   string         // URL path (e.g. "/data/backup")
+	conn       *protocol.Conn // instance-level single connection
+	mode       uint8          // ModeSource or ModeSourceNoWalker
+	configJSON string        // ServerConfig JSON for InitMsg
 }
 
 var _ storage.Source = (*Source)(nil)
@@ -47,7 +53,7 @@ func (s *Source) dialAndInit(taskID string) (*protocol.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("remote source dial %s: %w", s.addr, err)
 	}
-	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: s.mode, TaskID: taskID}
+	initMsg := &protocol.InitMsg{BasePath: s.basePath, Mode: s.mode, TaskID: taskID, ConfigJSON: s.configJSON}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("remote source init %s: %w", s.addr, err)

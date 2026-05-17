@@ -7,13 +7,15 @@ import (
 
 	"github.com/zp001/ncp/internal/protocol"
 	"github.com/zp001/ncp/pkg/interfaces/storage"
+	"github.com/zp001/ncp/pkg/model"
 )
 
 // Destination implements storage.Destination for remote ncp servers.
 type Destination struct {
-	addr     string
-	basePath string
-	conn     *protocol.Conn
+	addr       string
+	basePath   string
+	configJSON string
+	conn       *protocol.Conn
 }
 
 var _ storage.Destination = (*Destination)(nil)
@@ -58,8 +60,8 @@ func osModeToProto(mode os.FileMode) uint32 {
 
 // NewDestination creates a remote Destination for the given ncp server.
 // The connection is not established until Open is called.
-func NewDestination(addr, basePath string) (*Destination, error) {
-	return &Destination{addr: addr, basePath: basePath}, nil
+func NewDestination(addr, basePath, configJSON string) (*Destination, error) {
+	return &Destination{addr: addr, basePath: basePath, configJSON: configJSON}, nil
 }
 
 // BeginTask establishes the TCP connection and sends MsgInit.
@@ -69,7 +71,7 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("remote destination dial %s: %w", d.addr, err)
 	}
 
-	initMsg := &protocol.InitMsg{BasePath: d.basePath, Mode: protocol.ModeDestination, TaskID: taskID}
+	initMsg := &protocol.InitMsg{BasePath: d.basePath, Mode: protocol.ModeDestination, TaskID: taskID, ConfigJSON: d.configJSON}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		conn.Close()
 		return fmt.Errorf("remote init %s: %w", d.addr, err)
@@ -229,4 +231,30 @@ func (d *Destination) Stat(ctx context.Context, relPath string) (storage.Discove
 // fullPath returns relPath — basePath is already sent via MsgInit.
 func (d *Destination) fullPath(relPath string) string {
 	return relPath
+}
+
+// ExistsDir checks whether the destination base path exists as a directory
+// on the remote server by sending MsgStat with an empty relPath (the base itself).
+func (d *Destination) ExistsDir(ctx context.Context) (bool, error) {
+	if d.conn == nil {
+		// Not connected yet — can't check. Return false (doesn't exist) without error.
+		return false, nil
+	}
+	msg := &protocol.StatMsg{RelPath: ""}
+	f, err := d.conn.SendAndRecv(protocol.MsgStat, msg.Encode())
+	if err != nil {
+		return false, fmt.Errorf("remote existsdir: %w", err)
+	}
+	if f.Type == protocol.MsgError {
+		// Stat on empty path failed — likely doesn't exist
+		return false, nil
+	}
+	dataMsg := &protocol.DataMsg{}
+	if err := dataMsg.Decode(f.Payload); err != nil {
+		return false, fmt.Errorf("remote existsdir decode: %w", err)
+	}
+	if len(dataMsg.Entries) == 0 {
+		return false, nil
+	}
+	return dataMsg.Entries[0].FileType == uint8(model.FileDir), nil
 }

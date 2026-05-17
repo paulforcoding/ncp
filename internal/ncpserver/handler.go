@@ -2,14 +2,17 @@ package ncpserver
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/zp001/ncp/internal/protocol"
+	"github.com/zp001/ncp/internal/filelog"
 	"github.com/zp001/ncp/pkg/model"
 )
 
@@ -109,24 +112,40 @@ func (h *ConnHandler) HandleConn(conn *protocol.Conn) error {
 		return err
 	}
 
-	// Reject old clients that don't send Mode and TaskID
+	// Reject old clients that don't send Mode, TaskID, or ConfigJSON
 	if initMsg.Mode == 0 || initMsg.TaskID == "" {
 		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send Mode and TaskID"))
 		return fmt.Errorf("old client rejected: missing Mode/TaskID")
+	}
+	if initMsg.ConfigJSON == "" {
+		_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, "client must send ConfigJSON (protocol v4 required)"))
+		return fmt.Errorf("old client rejected: missing ConfigJSON")
 	}
 
 	// Server state machine validation
 	h.server.mu.Lock()
 	if h.server.mode == ServerModeUninitialized {
-		// First connection: create walker for Source, skip for SourceNoWalker, MkdirAll for Destination
-		if initMsg.Mode == protocol.ModeSource {
-			h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, h.server.tempDir)
-			h.server.walker.start()
-		} else if initMsg.Mode == protocol.ModeSourceNoWalker {
-			// SourceNoWalker: no walker needed
-		} else {
-			_ = os.MkdirAll(initMsg.BasePath, 0o755)
+		// First connection: parse ServerConfig from InitMsg
+		var serverCfg model.ServerConfig
+		if err := json.Unmarshal([]byte(initMsg.ConfigJSON), &serverCfg); err != nil {
+			h.server.mu.Unlock()
+			_ = conn.Send(protocol.MsgError, protocol.EncodeError(model.ErrProtocol, fmt.Sprintf("invalid ConfigJSON: %v", err)))
+			return fmt.Errorf("invalid ConfigJSON: %w", err)
 		}
+		h.server.ApplyConfig(&serverCfg)
+
+		// Setup ProgramLog from client config
+		if err := filelog.SetupProgramLog(serverCfg.ProgramLogOutput, serverCfg.ProgramLogLevel); err != nil {
+			slog.Warn("failed to setup program log from client config", "error", err)
+		}
+
+		// Create walker for Source mode
+		if initMsg.Mode == protocol.ModeSource {
+			h.server.walker = newTaskWalker(initMsg.TaskID, initMsg.BasePath, h.server.TempDir())
+			h.server.walker.start()
+		}
+		// Destination mode: no auto MkdirAll — directory creation is driven by client MsgMkdir messages
+
 		h.server.mode = initMsg.Mode
 		h.server.taskID = initMsg.TaskID
 	} else {

@@ -122,7 +122,7 @@ func resolveRemoteSourceMode(store progress.ProgressStore) uint8 {
 // notifyRemoteTaskDone dials the remote ncp serve and sends MsgTaskDone
 // after the task has completed. No-op if neither src nor dst is ncp://.
 // srcMode is the mode used for remote sources (ModeSource or ModeSourceNoWalker).
-func notifyRemoteTaskDone(srcBase, dstBase, taskID string, srcMode uint8) error {
+func notifyRemoteTaskDone(srcBase, dstBase, taskID string, srcMode uint8, configJSON string) error {
 	var addr, basePath string
 	var mode uint8
 
@@ -144,7 +144,7 @@ func notifyRemoteTaskDone(srcBase, dstBase, taskID string, srcMode uint8) error 
 	}
 	defer conn.Close()
 
-	initMsg := &protocol.InitMsg{BasePath: basePath, Mode: mode, TaskID: taskID}
+	initMsg := &protocol.InitMsg{BasePath: basePath, Mode: mode, TaskID: taskID, ConfigJSON: configJSON}
 	if _, err := conn.SendMsgRecvAck(protocol.MsgInit, initMsg.Encode()); err != nil {
 		return fmt.Errorf("send init for task done: %w", err)
 	}

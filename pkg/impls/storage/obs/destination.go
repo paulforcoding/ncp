@@ -241,6 +241,31 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 // EndTask is a no-op for OBS destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
+// ExistsDir checks whether the prefix exists as a directory in OBS.
+func (d *Destination) ExistsDir(_ context.Context) (bool, error) {
+	// Try HeadObject on the prefix (directory marker)
+	_, err := d.client.GetObjectMetadata(&obs.GetObjectMetadataInput{
+		Bucket: d.bucket,
+		Key:    d.prefix,
+	})
+	if err == nil {
+		return true, nil
+	}
+	// Fall back to listing objects under the prefix
+	result, err := d.client.ListObjects(&obs.ListObjectsInput{
+		Bucket: d.bucket,
+		ListObjsInput: obs.ListObjsInput{
+			Prefix:    d.prefix,
+			MaxKeys:   1,
+			Delimiter: "/",
+		},
+	})
+	if err != nil {
+		return false, fmt.Errorf("obs existsdir list: %w", err)
+	}
+	return len(result.Contents) > 0 || len(result.CommonPrefixes) > 0, nil
+}
+
 // osModeToProto converts Go os.FileMode to POSIX permission bits.
 func osModeToProto(mode os.FileMode) uint32 {
 	pm := uint32(mode.Perm())

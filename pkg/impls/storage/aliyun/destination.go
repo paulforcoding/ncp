@@ -196,6 +196,38 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 // EndTask is a no-op for OSS destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
+// ExistsDir checks whether the prefix exists as a directory in OSS.
+// It first tries HeadObject on the prefix itself (directory marker object),
+// then falls back to ListObjects to check if any objects exist under the prefix.
+func (d *Destination) ExistsDir(ctx context.Context) (bool, error) {
+	// Try HeadObject on the prefix (directory marker)
+	_, err := withRetryResult(ctx, d.retryCfg, func() (*oss.HeadObjectResult, error) {
+		return d.client.HeadObject(ctx, &oss.HeadObjectRequest{
+			Bucket: oss.Ptr(d.bucket),
+			Key:    oss.Ptr(d.prefix),
+		})
+	})
+	if err == nil {
+		return true, nil
+	}
+	// Fall back to listing objects under the prefix
+	result, err := withRetryResult(ctx, d.retryCfg, func() (*oss.ListObjectsV2Result, error) {
+		return d.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+			Bucket:    oss.Ptr(d.bucket),
+			Prefix:    oss.Ptr(d.prefix),
+			MaxKeys:   1,
+			Delimiter: oss.Ptr("/"),
+		})
+	})
+	if err != nil {
+		return false, fmt.Errorf("oss existsdir list: %w", err)
+	}
+	if result == nil {
+		return false, nil
+	}
+	return len(result.Contents) > 0 || len(result.CommonPrefixes) > 0, nil
+}
+
 // Stat returns metadata for an existing object on the destination (for skip-by-mtime).
 func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := d.key(relPath)

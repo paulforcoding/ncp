@@ -200,7 +200,7 @@ func TestNewSource_DefaultMode(t *testing.T) {
 }
 
 func TestDestinationFullPath(t *testing.T) {
-	d, _ := NewDestination("host:9900", "/data")
+	d, _ := NewDestination("host:9900", "/data", "")
 	got := d.fullPath("sub/file.txt")
 	// fullPath returns relPath as-is (basePath already sent via MsgInit)
 	if got != "sub/file.txt" {
@@ -209,7 +209,7 @@ func TestDestinationFullPath(t *testing.T) {
 }
 
 func TestNewDestination_Basic(t *testing.T) {
-	d, err := NewDestination("host:9900", "/data/backup")
+	d, err := NewDestination("host:9900", "/data/backup", "")
 	if err != nil {
 		t.Fatalf("NewDestination: %v", err)
 	}

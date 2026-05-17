@@ -212,6 +212,27 @@ func (d *Destination) BeginTask(ctx context.Context, taskID string) error { retu
 // EndTask is a no-op for COS destinations.
 func (d *Destination) EndTask(ctx context.Context, summary storage.TaskSummary) error { return nil }
 
+// ExistsDir checks whether the prefix exists as a directory in COS.
+func (d *Destination) ExistsDir(ctx context.Context) (bool, error) {
+	// Try HeadObject on the prefix (directory marker)
+	_, err := withRetryResult(ctx, d.retryCfg, func() (*cos.Response, error) {
+		return d.client.Object.Head(ctx, d.prefix, nil)
+	})
+	if err == nil {
+		return true, nil
+	}
+	// Fall back to listing objects under the prefix
+	result, _, err := d.client.Bucket.Get(ctx, &cos.BucketGetOptions{
+		Prefix:     d.prefix,
+		MaxKeys:    1,
+		Delimiter:  "/",
+	})
+	if err != nil {
+		return false, fmt.Errorf("cos existsdir list: %w", err)
+	}
+		return len(result.Contents) > 0 || len(result.CommonPrefixes) > 0, nil
+}
+
 // Stat returns metadata for an existing object on the destination (for skip-by-mtime).
 func (d *Destination) Stat(ctx context.Context, relPath string) (storage.DiscoverItem, error) {
 	key := d.key(relPath)
